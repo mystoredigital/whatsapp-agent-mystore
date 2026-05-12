@@ -71,7 +71,6 @@ export class GHLClient {
         contactId,
         message,
         conversationProviderId,
-        direction: 'inbound',
         ...(altId ? { altId } : {}),
       },
     });

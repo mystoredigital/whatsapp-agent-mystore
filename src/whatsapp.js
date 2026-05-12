@@ -103,9 +103,10 @@ export class WhatsAppSession {
     const conv = this.store.addMessage(jid, { role: 'user', text }, name);
 
     // Mirror a GHL si el tenant está conectado
-    this._pushInboundToGHL({ jid, text, name, altId: msg.key.id }).catch((e) =>
-      console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message)
-    );
+    this._pushInboundToGHL({ jid, text, name, altId: msg.key.id }).catch((e) => {
+      console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message);
+      this.store.addMessage(jid, { role: 'system', text: `⚠️ Push GHL falló: ${e.message}` });
+    });
 
     if (conv.mode !== 'ai') return;
 
@@ -120,9 +121,10 @@ export class WhatsAppSession {
         this.store.addMessage(jid, { role: 'assistant', text: reply });
         // Mirror la respuesta de IA a GHL como inbound del lado business
         // (GHL no tiene endpoint público "external outbound", así que la pintamos como un nota interna por ahora)
-        this._pushAIReplyToGHL({ jid, text: reply }).catch((e) =>
-          console.error(`[ghl:${this.store.tenantId}] push reply`, e.message)
-        );
+        this._pushAIReplyToGHL({ jid, text: reply }).catch((e) => {
+          console.error(`[ghl:${this.store.tenantId}] push reply`, e.message);
+          this.store.addMessage(jid, { role: 'system', text: `⚠️ Push reply GHL falló: ${e.message}` });
+        });
       }
       await this.sock.sendPresenceUpdate('paused', jid);
     } catch (e) {

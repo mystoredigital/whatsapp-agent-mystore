@@ -6,6 +6,7 @@ import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
 import { phoneToJid } from './ghl/phone.js';
+import { GHLClient } from './ghl/client.js';
 
 function basicAuth(req, res, next) {
   // No autenticar rutas públicas necesarias para el flujo GHL
@@ -262,6 +263,32 @@ export function startServer(port = 3000) {
       console.log(`[webhook outbound] enviado a ${jid}`);
     } catch (e) {
       console.error('[webhook outbound] error post-ack:', e.message);
+    }
+  });
+
+  // Debug: empuja un mensaje de prueba a GHL Conversations para diagnosticar
+  app.post('/api/debug/ghl-inbound', async (req, res) => {
+    try {
+      const { tenant: tenantId = '_local', phone, message = 'test desde debug' } = req.body || {};
+      const tenant = tenants.get(tenantId);
+      if (!tenant) return res.status(404).json({ error: `tenant ${tenantId} no existe` });
+      if (!tenant.ghl) return res.status(400).json({ error: 'tenant sin GHL conectado' });
+      if (!phone) return res.status(400).json({ error: 'phone requerido (E.164 con +)' });
+
+      const client = new GHLClient(tenant);
+      const contact = await client.findOrCreateContact({ phone, name: 'Debug' }).catch((e) => ({ _err: e.message }));
+      if (contact?._err) return res.json({ step: 'findOrCreateContact', error: contact._err });
+
+      const resp = await client.sendInboundMessage({
+        contactId: contact.id,
+        message,
+        conversationProviderId: process.env.GHL_CONVERSATION_PROVIDER_ID,
+        altId: `debug:${Date.now()}`,
+      }).catch((e) => ({ _err: e.message }));
+
+      res.json({ contact: { id: contact.id, name: contact.firstName, phone: contact.phone }, ghlResponse: resp });
+    } catch (e) {
+      res.status(500).json({ error: e.message, stack: e.stack });
     }
   });
 
