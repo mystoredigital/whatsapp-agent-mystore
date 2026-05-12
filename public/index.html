@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>My Store · WhatsApp Agent</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">My Store · WhatsApp Agent</div>
+  <div class="status" id="connStatus">conectando…</div>
+  <button id="btnPrompt" class="btn">Editar prompt</button>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <h2>Conversaciones</h2>
+    <ul id="chatList"></ul>
+  </aside>
+
+  <section class="chat">
+    <header class="chat-header">
+      <div id="chatTitle">Selecciona un chat</div>
+      <label class="toggle">
+        <input type="checkbox" id="modeToggle" />
+        <span>Modo humano</span>
+      </label>
+    </header>
+    <div class="messages" id="messages"></div>
+    <footer class="composer">
+      <input type="text" id="manualInput" placeholder="Mensaje manual (modo humano)…" disabled />
+      <button id="manualSend" class="btn primary" disabled>Enviar</button>
+    </footer>
+  </section>
+</main>
+
+<div id="qrModal" class="modal hidden">
+  <div class="modal-body">
+    <h3>Escanea para vincular WhatsApp</h3>
+    <img id="qrImg" alt="QR" />
+    <p>WhatsApp &gt; Dispositivos vinculados &gt; Vincular un dispositivo</p>
+  </div>
+</div>
+
+<div id="promptModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>System Prompt</h3>
+    <textarea id="promptText" rows="18"></textarea>
+    <div class="row">
+      <button id="promptCancel" class="btn">Cancelar</button>
+      <button id="promptSave" class="btn primary">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
