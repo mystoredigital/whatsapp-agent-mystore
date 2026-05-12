@@ -45,9 +45,15 @@ export class TenantStore extends EventEmitter {
     await fs.mkdir(this.dir, { recursive: true });
     try {
       const raw = await fs.readFile(this.convFile, 'utf8');
+      let dirty = false;
       for (const [jid, conv] of Object.entries(JSON.parse(raw))) {
+        if (conv?.name && jid.endsWith('@lid') && conv.name === jid.split('@')[0]) {
+          delete conv.name;
+          dirty = true;
+        }
         this.conversations.set(jid, conv);
       }
+      if (dirty) this.persistConversations().catch(() => {});
     } catch {}
     try {
       this.config = { ...this.config, ...JSON.parse(await fs.readFile(this.configFile, 'utf8')) };
@@ -98,8 +104,9 @@ export class TenantStore extends EventEmitter {
 
   getOrCreateConversation(jid, name) {
     if (!this.conversations.has(jid)) {
+      const fallback = jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0] : null;
       this.conversations.set(jid, {
-        jid, name: name || jid.split('@')[0],
+        jid, name: name || fallback,
         mode: 'ai', messages: [], updatedAt: Date.now(),
       });
     } else if (name && !this.conversations.get(jid).name) {

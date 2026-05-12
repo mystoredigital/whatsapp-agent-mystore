@@ -88,7 +88,7 @@ function renderChatList() {
     if (conv.jid === state.activeJid) li.classList.add('active');
     const last = conv.messages[conv.messages.length - 1];
     li.innerHTML = `
-      <div class="name">${conv.name || conv.jid}</div>
+      <div class="name">${escapeHtml(displayName(conv))}</div>
       <div class="preview">${last ? escapeHtml((last.text || '').slice(0, 60)) : '(sin mensajes)'}</div>
       <div class="meta">
         <span class="mode-badge ${conv.mode}">${conv.mode === 'ai' ? 'IA' : 'HUMANO'}</span>
@@ -111,7 +111,7 @@ function renderMessages() {
     $('manualSend').disabled = true;
     return;
   }
-  $('chatTitle').textContent = `${conv.name} · ${conv.jid.split('@')[0]}`;
+  $('chatTitle').textContent = displayName(conv);
   $('modeToggle').checked = conv.mode === 'human';
   $('modeToggle').disabled = false;
   const isHuman = conv.mode === 'human';
@@ -125,6 +125,13 @@ function renderMessages() {
     wrap.appendChild(div);
   }
   wrap.scrollTop = wrap.scrollHeight;
+}
+
+function displayName(conv) {
+  if (conv.name) return conv.name;
+  if (conv.jid.endsWith('@s.whatsapp.net')) return `+${conv.jid.split('@')[0]}`;
+  if (conv.jid.endsWith('@lid')) return 'Sin identificar';
+  return conv.jid;
 }
 
 function escapeHtml(s) {

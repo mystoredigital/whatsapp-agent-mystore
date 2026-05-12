@@ -100,11 +100,11 @@ export class WhatsAppSession {
     const text = extractText(msg.message);
     if (!text.trim()) return;
 
-    const name = msg.pushName || undefined;
-    const conv = this.store.addMessage(jid, { role: 'user', text }, name);
-
     // Resolver teléfono real (manejando LID mode)
     const resolved = resolvePhoneAndJid(msg);
+
+    const name = msg.pushName || resolved?.phone || undefined;
+    const conv = this.store.addMessage(jid, { role: 'user', text }, name);
 
     // Mirror a GHL si el tenant está conectado Y tenemos teléfono real
     if (resolved?.phone) {
