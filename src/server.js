@@ -234,6 +234,11 @@ export function startServer(port = 3000) {
   });
 
   // --- GHL webhooks ---
+  // GHL valida la delivery URL con GET antes de aceptarla
+  app.get('/webhooks/ghl/outbound', (_req, res) => {
+    res.json({ ok: true, service: 'whatsapp-agent-mystore', endpoint: 'ghl-outbound' });
+  });
+
   app.post('/webhooks/ghl/outbound', async (req, res) => {
     // GHL → nosotros cuando el operador escribe en la UI de Conversations.
     // Payload típico: { type, locationId, contactId, messageId, message, phone, attachments, userId }
