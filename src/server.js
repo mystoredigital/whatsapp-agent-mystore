@@ -269,7 +269,7 @@ export function startServer(port = 3000) {
   // Debug: empuja un mensaje de prueba a GHL Conversations para diagnosticar
   app.post('/api/debug/ghl-inbound', async (req, res) => {
     try {
-      const { tenant: tenantId = '_local', phone, message = 'test desde debug', type = 'SMS' } = req.body || {};
+      const { tenant: tenantId = '_local', phone, message = 'test desde debug', type } = req.body || {};
       const tenant = tenants.get(tenantId);
       if (!tenant) return res.status(404).json({ error: `tenant ${tenantId} no existe` });
       if (!tenant.ghl) return res.status(400).json({ error: 'tenant sin GHL conectado' });
@@ -279,15 +279,16 @@ export function startServer(port = 3000) {
       const contact = await client.findOrCreateContact({ phone, name: 'Debug' }).catch((e) => ({ _err: e.message }));
       if (contact?._err) return res.json({ step: 'findOrCreateContact', error: contact._err });
 
-      const resp = await client.sendInboundMessage({
+      const args = {
         contactId: contact.id,
         message,
         conversationProviderId: process.env.GHL_CONVERSATION_PROVIDER_ID,
         altId: `debug:${Date.now()}`,
-        type,
-      }).catch((e) => ({ _err: e.message }));
+        ...(type ? { type } : {}),
+      };
+      const resp = await client.sendInboundMessage(args).catch((e) => ({ _err: e.message }));
 
-      res.json({ tried: { type, providerId: process.env.GHL_CONVERSATION_PROVIDER_ID }, contact: { id: contact.id, name: contact.firstName, phone: contact.phone }, ghlResponse: resp });
+      res.json({ tried: { type: type || 'default', providerId: process.env.GHL_CONVERSATION_PROVIDER_ID }, contact: { id: contact.id, name: contact.firstName, phone: contact.phone }, ghlResponse: resp });
     } catch (e) {
       res.status(500).json({ error: e.message, stack: e.stack });
     }
