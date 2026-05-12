@@ -20,6 +20,11 @@ body {
 #tenantSelect { background:#243240;color:#e7e9ea;border:1px solid #2f4150;border-radius:6px;padding:6px 8px;font-size:13px;max-width:240px; }
 .badge { font-size:11px;color:#1d9bf0;padding:2px 8px;border:1px solid #1d9bf0;border-radius:10px; }
 .badge:empty { display:none; }
+.metrics { font-size:11px;color:#8899a6;font-family:ui-monospace,Menlo,monospace;white-space:nowrap; }
+.metrics:empty { display:none; }
+.metrics .lbl { color:#5b6b7a; }
+.metrics .val { color:#e7e9ea; }
+.metrics .warn { color:#ffb300; }
 
 /* Modo embed (iframe en GHL) */
 body.embed .brand { display:none; }

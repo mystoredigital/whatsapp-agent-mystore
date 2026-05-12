@@ -149,8 +149,12 @@ export function startServer(port = 3000) {
   app.get('/api/tenants', (_req, res) => res.json({ tenants: tenants.list() }));
 
   app.get('/api/state', (req, res) => {
-    try { res.json(getTenant(req).snapshot()); }
-    catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+    try {
+      const t = getTenant(req);
+      const snap = t.snapshot();
+      snap.metrics = tenants.session(t.tenantId)?.getMetrics() || null;
+      res.json(snap);
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
   app.post('/api/config', (req, res) => {
@@ -420,11 +424,15 @@ export function startServer(port = 3000) {
     socket.on('subscribe', (tenantId) => {
       socket.join(`tenant:${tenantId}`);
       const t = tenants.get(tenantId);
-      if (t) socket.emit('state', t.snapshot());
+      if (t) {
+        const snap = t.snapshot();
+        snap.metrics = tenants.session(tenantId)?.getMetrics() || null;
+        socket.emit('state', snap);
+      }
     });
   });
 
-  for (const ev of ['message', 'mode', 'config', 'connection']) {
+  for (const ev of ['message', 'mode', 'config', 'connection', 'metrics']) {
     tenants.on(ev, (payload) => {
       io.to(`tenant:${payload.tenantId}`).emit(ev, payload);
     });

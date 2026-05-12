@@ -85,7 +85,7 @@ class TenantRegistry extends EventEmitter {
   }
 
   _wireEvents(store) {
-    for (const ev of ['message', 'mode', 'config', 'connection']) {
+    for (const ev of ['message', 'mode', 'config', 'connection', 'metrics']) {
       store.on(ev, (payload) => this.emit(ev, payload));
     }
   }

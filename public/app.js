@@ -12,6 +12,7 @@ const state = {
   connection: { state: 'disconnected', qr: null },
   meta: null,
   ghl: null,
+  metrics: null,
   activeJid: null,
 };
 
@@ -78,6 +79,24 @@ function renderTenantBar() {
     sel.appendChild(opt);
   }
   $('ghlBadge').textContent = state.ghl ? `🔗 GHL: ${state.ghl.locationId.slice(0, 8)}…` : '';
+  renderMetrics();
+}
+
+function renderMetrics() {
+  const el = $('metricsBar');
+  const m = state.metrics;
+  if (!m) { el.textContent = ''; return; }
+  const cell = (label, val, warn) => {
+    const cls = warn && val > 0 ? 'warn' : 'val';
+    return `<span class="lbl">${label}:</span> <span class="${cls}">${val}</span>`;
+  };
+  el.innerHTML = [
+    cell('IA', m.sent),
+    cell('rate', m.skippedRateLimit, true),
+    cell('silencio', m.skippedQuietHours),
+    cell('greylist', m.skippedGreylist),
+    cell('reconn', m.reconnects, true),
+  ].join(' · ');
 }
 
 function renderChatList() {
@@ -199,6 +218,7 @@ async function loadState() {
   state.connection = snap.connection;
   state.meta = snap.meta;
   state.ghl = snap.ghl;
+  state.metrics = snap.metrics || null;
   renderConnection();
   renderTenantBar();
   renderChatList();
@@ -224,12 +244,14 @@ socket.on('state', (snap) => {
   state.connection = snap.connection;
   state.meta = snap.meta;
   state.ghl = snap.ghl;
+  state.metrics = snap.metrics || null;
   renderConnection();
   renderTenantBar();
   renderChatList();
   renderMessages();
 });
 socket.on('connection', ({ connection }) => { state.connection = connection; renderConnection(); });
+socket.on('metrics', ({ metrics }) => { state.metrics = metrics; renderMetrics(); });
 socket.on('mode', ({ jid, mode }) => {
   const conv = state.conversations.find((c) => c.jid === jid);
   if (!conv) return;
