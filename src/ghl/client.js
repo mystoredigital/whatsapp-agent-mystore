@@ -12,16 +12,24 @@ export class GHLClient {
     if (!this.store.ghl) throw new Error('Tenant sin tokens GHL');
     const expiresAt = this.store.ghl.expiresAt || 0;
     // Refresca 60s antes de expirar
-    if (Date.now() > expiresAt - 60000) {
-      const fresh = await oauthRefresh({
-        refreshToken: this.store.ghl.refreshToken,
-        clientId: process.env.GHL_CLIENT_ID,
-        clientSecret: process.env.GHL_CLIENT_SECRET,
-        userType: this.store.ghl.userType || 'Location',
-      });
-      this.store.setGhlTokens(fresh);
-      console.log(`[ghl:${this.store.tenantId}] token refrescado`);
+    if (Date.now() <= expiresAt - 60000) return this.store.ghl.accessToken;
+
+    // Single-flight: el refresh token rota al usarse — si dos requests refrescan
+    // en paralelo, una de las dos pierde el nuevo refresh y queda fuera. El lock
+    // vive en el store para que múltiples GHLClient compartan el mismo refresh.
+    if (!this.store._refreshPromise) {
+      this.store._refreshPromise = (async () => {
+        const fresh = await oauthRefresh({
+          refreshToken: this.store.ghl.refreshToken,
+          clientId: process.env.GHL_CLIENT_ID,
+          clientSecret: process.env.GHL_CLIENT_SECRET,
+          userType: this.store.ghl.userType || 'Location',
+        });
+        this.store.setGhlTokens(fresh);
+        console.log(`[ghl:${this.store.tenantId}] token refrescado`);
+      })().finally(() => { this.store._refreshPromise = null; });
     }
+    await this.store._refreshPromise;
     return this.store.ghl.accessToken;
   }
 
@@ -29,16 +37,25 @@ export class GHLClient {
     const token = await this._ensureFreshToken();
     const url = new URL(API_BASE + pathname);
     if (query) for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Version: API_VERSION,
-        Accept: 'application/json',
-        ...(json ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: json ? JSON.stringify(json) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Version: API_VERSION,
+          Accept: 'application/json',
+          ...(json ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: json ? JSON.stringify(json) : undefined,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (e) {
+      if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+        throw new Error(`GHL ${method} ${pathname} timeout (15s)`);
+      }
+      throw e;
+    }
     const text = await res.text();
     if (!res.ok) throw new Error(`GHL ${method} ${pathname} ${res.status}: ${text}`);
     return text ? JSON.parse(text) : null;

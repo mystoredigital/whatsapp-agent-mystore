@@ -9,6 +9,7 @@ import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
 import { phoneToJid } from './ghl/phone.js';
 import { GHLClient } from './ghl/client.js';
 import { decryptGhlPayload, signSession, verifySession } from './ghl/sso.js';
+import { ghlWebhookGuard } from './ghl/webhook.js';
 
 const EMBED_COOKIE = 'embed_session';
 const SESSION_TTL = 60 * 60 * 12; // 12h
@@ -131,9 +132,16 @@ const GHL_SCOPES = [
 export function startServer(port = 3000) {
   const app = express();
   app.use(cookieParser());
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({
+    limit: '1mb',
+    // Capturamos el cuerpo raw para que ghlWebhookGuard pueda verificar firmas RSA.
+    verify: (req, _res, buf) => { if (buf?.length) req.rawBody = buf; },
+  }));
   app.use(express.urlencoded({ extended: true }));
   app.use(authMiddleware);
+  // Solo POST a /webhooks/ghl/* requiere firma. GET (validación del delivery URL) y
+  // otras rutas no se ven afectadas.
+  app.use('/webhooks/ghl', ghlWebhookGuard);
   app.use(express.static(path.resolve('./public')));
 
   // Servir /embed sin extensión
@@ -320,30 +328,44 @@ export function startServer(port = 3000) {
 
     res.json({ ok: true, queued: true });
 
-    try {
-      if (!locationId || !message) return;
-      const tenant = tenants.get(locationId);
-      if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
-      const session = tenants.session(locationId);
-      if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
+    if (!locationId || !message) return;
+    const tenant = tenants.get(locationId);
+    if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
+    const session = tenants.session(locationId);
+    if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
 
-      // 1) intentar resolver JID via contactId (correcto incluso con LID)
-      let jid = contactId ? tenant.getJidByContactId(contactId) : null;
-      // 2) fallback: convertir phone → JID estándar (solo válido si no es LID)
-      if (!jid && phone) jid = phoneToJid(phone);
-      if (!jid) return console.warn(`[webhook outbound] no se pudo resolver jid: contactId=${contactId} phone=${phone}`);
+    // 1) intentar resolver JID via contactId (correcto incluso con LID)
+    let jid = contactId ? tenant.getJidByContactId(contactId) : null;
+    // 2) fallback: convertir phone → JID estándar (solo válido si no es LID)
+    if (!jid && phone) jid = phoneToJid(phone);
+    if (!jid) return console.warn(`[webhook outbound] no se pudo resolver jid: contactId=${contactId} phone=${phone}`);
 
-      session.markOutboundSent(messageId);
-      await session.send(jid, message, { skipGhlMirror: true });
-      // Toma de control: si un humano respondió desde GHL, pausa la IA en este chat
-      if (tenant.getOrCreateConversation(jid).mode !== 'human') {
-        tenant.setMode(jid, 'human');
-        console.log(`[webhook outbound] modo humano activado para ${jid}`);
+    session.markOutboundSent(messageId);
+
+    // Retry con backoff exponencial. Cubre desconexiones cortas de Baileys + glitches transitorios.
+    const delays = [1_000, 3_000, 9_000];
+    let lastErr;
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        await session.send(jid, message, { skipGhlMirror: true });
+        if (tenant.getOrCreateConversation(jid).mode !== 'human') {
+          tenant.setMode(jid, 'human');
+          console.log(`[webhook outbound] modo humano activado para ${jid}`);
+        }
+        console.log(`[webhook outbound] enviado a ${jid}${attempt ? ` (tras ${attempt} reintento(s))` : ''}`);
+        return;
+      } catch (e) {
+        lastErr = e;
+        const next = delays[attempt];
+        console.warn(`[webhook outbound] intento ${attempt + 1} falló: ${e.message}${next ? ` — reintento en ${next}ms` : ''}`);
+        if (next) await new Promise((r) => setTimeout(r, next));
       }
-      console.log(`[webhook outbound] enviado a ${jid}`);
-    } catch (e) {
-      console.error('[webhook outbound] error post-ack:', e.message);
     }
+    console.error(`[webhook outbound] dropped tras ${delays.length + 1} intentos: ${lastErr?.message}`);
+    tenant.addMessage(jid, {
+      role: 'system',
+      text: `⚠️ Mensaje desde GHL no entregado tras ${delays.length + 1} intentos: ${lastErr?.message || 'desconocido'}\nContenido: ${message}`,
+    });
   });
 
   // Debug: empuja un mensaje de prueba a GHL Conversations para diagnosticar

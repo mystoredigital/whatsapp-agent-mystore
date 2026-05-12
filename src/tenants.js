@@ -24,7 +24,20 @@ class TenantRegistry extends EventEmitter {
     const entries = await fs.readdir(DATA_ROOT, { withFileTypes: true });
     for (const e of entries) {
       if (!e.isDirectory()) continue;
+      // _agencies guarda tokens de Agency, no es un tenant
+      if (e.name === '_agencies') continue;
       await this.load(e.name);
+    }
+
+    // Validaciones post-boot — gritar fuerte si una integración GHL existente
+    // queda inservible por una env var faltante (en vez de fallar silenciosamente
+    // al primer mensaje real).
+    const hasGhlTenant = Array.from(this.tenants.values()).some((t) => t.ghl?.accessToken);
+    if (hasGhlTenant && !process.env.GHL_CONVERSATION_PROVIDER_ID) {
+      console.warn('[bootstrap] ⚠️ Hay tenants con GHL conectado pero GHL_CONVERSATION_PROVIDER_ID no está configurado — el mirroring a GHL Conversations no funcionará');
+    }
+    if (hasGhlTenant && !process.env.GHL_WEBHOOK_PUBLIC_KEY) {
+      console.warn('[bootstrap] ⚠️ GHL_WEBHOOK_PUBLIC_KEY no configurado — los webhooks de GHL se aceptan sin firma');
     }
   }
 

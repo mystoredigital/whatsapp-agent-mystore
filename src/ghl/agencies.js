@@ -33,18 +33,28 @@ export async function listAgencyIds() {
   return files.filter((f) => f.endsWith('.json')).map((f) => f.replace('.json', ''));
 }
 
+// Single-flight por companyId — el refresh token rota al usarse, dos refresh
+// paralelos = uno pierde y queda fuera.
+const refreshInFlight = new Map();
+
 export async function getFreshAgencyToken(companyId) {
   const tokens = await loadAgencyTokens(companyId);
   if (!tokens) throw new Error(`Sin tokens de agencia ${companyId}`);
   if (Date.now() < (tokens.expiresAt || 0) - 60000) return tokens;
 
-  const fresh = await oauthRefresh({
-    refreshToken: tokens.refreshToken,
-    clientId: process.env.GHL_CLIENT_ID,
-    clientSecret: process.env.GHL_CLIENT_SECRET,
-    userType: 'Company',
-  });
-  fresh.companyId = fresh.companyId || tokens.companyId;
-  await saveAgencyTokens(fresh);
-  return fresh;
+  if (!refreshInFlight.has(companyId)) {
+    const p = (async () => {
+      const fresh = await oauthRefresh({
+        refreshToken: tokens.refreshToken,
+        clientId: process.env.GHL_CLIENT_ID,
+        clientSecret: process.env.GHL_CLIENT_SECRET,
+        userType: 'Company',
+      });
+      fresh.companyId = fresh.companyId || tokens.companyId;
+      await saveAgencyTokens(fresh);
+      return fresh;
+    })().finally(() => refreshInFlight.delete(companyId));
+    refreshInFlight.set(companyId, p);
+  }
+  return refreshInFlight.get(companyId);
 }

@@ -81,6 +81,10 @@ export async function generateReply({ systemPrompt, history }) {
         'X-Title': process.env.OPENROUTER_SITE_NAME || 'WhatsApp Agent',
       },
       body: JSON.stringify({ model, messages, tools, tool_choice: tools ? 'auto' : undefined }),
+      signal: AbortSignal.timeout(45_000),
+    }).catch((e) => {
+      if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error('OpenRouter timeout (45s)');
+      throw e;
     });
     if (!res.ok) {
       const errText = await res.text();
