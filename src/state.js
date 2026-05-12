@@ -30,12 +30,15 @@ export class TenantStore extends EventEmitter {
     this.configFile = path.join(this.dir, 'config.json');
     this.metaFile = path.join(this.dir, 'meta.json');
     this.tokensFile = path.join(this.dir, 'tokens.json');
+    this.contactsFile = path.join(this.dir, 'contacts.json');
 
     this.conversations = new Map();
     this.config = { systemPrompt: DEFAULT_PROMPT };
     this.connection = { state: 'disconnected', qr: null };
     this.meta = { tenantId, kind: meta.kind || 'local', ...meta };
     this.ghl = null;
+    this.jidByContactId = new Map(); // contactId GHL → jid WhatsApp
+    this.contactIdByJid = new Map();
   }
 
   async load() {
@@ -55,6 +58,28 @@ export class TenantStore extends EventEmitter {
     try {
       this.ghl = JSON.parse(await fs.readFile(this.tokensFile, 'utf8'));
     } catch {}
+    try {
+      const map = JSON.parse(await fs.readFile(this.contactsFile, 'utf8'));
+      for (const [contactId, jid] of Object.entries(map)) {
+        this.jidByContactId.set(contactId, jid);
+        this.contactIdByJid.set(jid, contactId);
+      }
+    } catch {}
+  }
+
+  linkContact(contactId, jid) {
+    if (!contactId || !jid) return;
+    this.jidByContactId.set(contactId, jid);
+    this.contactIdByJid.set(jid, contactId);
+    fs.writeFile(this.contactsFile, JSON.stringify(Object.fromEntries(this.jidByContactId), null, 2)).catch(() => {});
+  }
+
+  getJidByContactId(contactId) {
+    return this.jidByContactId.get(contactId);
+  }
+
+  getContactIdByJid(jid) {
+    return this.contactIdByJid.get(jid);
   }
 
   async persistConversations() {

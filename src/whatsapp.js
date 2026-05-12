@@ -9,7 +9,7 @@ import pino from 'pino';
 import qrcode from 'qrcode';
 import { generateReply } from './ai.js';
 import { GHLClient } from './ghl/client.js';
-import { jidToPhone } from './ghl/phone.js';
+import { resolvePhoneAndJid } from './ghl/phone.js';
 
 const logger = pino({ level: 'warn' });
 
@@ -102,11 +102,18 @@ export class WhatsAppSession {
     const name = msg.pushName || undefined;
     const conv = this.store.addMessage(jid, { role: 'user', text }, name);
 
-    // Mirror a GHL si el tenant está conectado
-    this._pushInboundToGHL({ jid, text, name, altId: msg.key.id }).catch((e) => {
-      console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message);
-      this.store.addMessage(jid, { role: 'system', text: `⚠️ Push GHL falló: ${e.message}` });
-    });
+    // Resolver teléfono real (manejando LID mode)
+    const resolved = resolvePhoneAndJid(msg);
+
+    // Mirror a GHL si el tenant está conectado Y tenemos teléfono real
+    if (resolved?.phone) {
+      this._pushInboundToGHL({ jid, phone: resolved.phone, text, name, altId: msg.key.id }).catch((e) => {
+        console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message);
+        this.store.addMessage(jid, { role: 'system', text: `⚠️ Push GHL falló: ${e.message}` });
+      });
+    } else if (this.store.ghl?.accessToken) {
+      console.warn(`[wa:${this.store.tenantId}] jid sin teléfono resoluble: ${jid}`);
+    }
 
     if (conv.mode !== 'ai') return;
 
@@ -120,11 +127,12 @@ export class WhatsAppSession {
         await this.sock.sendMessage(jid, { text: reply });
         this.store.addMessage(jid, { role: 'assistant', text: reply });
         // Mirror la respuesta de IA a GHL como inbound del lado business
-        // (GHL no tiene endpoint público "external outbound", así que la pintamos como un nota interna por ahora)
-        this._pushAIReplyToGHL({ jid, text: reply }).catch((e) => {
-          console.error(`[ghl:${this.store.tenantId}] push reply`, e.message);
-          this.store.addMessage(jid, { role: 'system', text: `⚠️ Push reply GHL falló: ${e.message}` });
-        });
+        if (resolved?.phone) {
+          this._pushAIReplyToGHL({ jid, phone: resolved.phone, text: reply }).catch((e) => {
+            console.error(`[ghl:${this.store.tenantId}] push reply`, e.message);
+            this.store.addMessage(jid, { role: 'system', text: `⚠️ Push reply GHL falló: ${e.message}` });
+          });
+        }
       }
       await this.sock.sendPresenceUpdate('paused', jid);
     } catch (e) {
@@ -133,12 +141,10 @@ export class WhatsAppSession {
     }
   }
 
-  async _pushInboundToGHL({ jid, text, name, altId }) {
+  async _pushInboundToGHL({ jid, phone, text, name, altId }) {
     if (!this.store.ghl?.accessToken) return;
     const providerId = process.env.GHL_CONVERSATION_PROVIDER_ID;
     if (!providerId) return;
-    const phone = jidToPhone(jid);
-    if (!phone) return;
 
     const ghl = new GHLClient(this.store);
     const contact = await ghl.findOrCreateContact({ phone, name });
@@ -147,29 +153,32 @@ export class WhatsAppSession {
       console.warn(`[ghl:${this.store.tenantId}] sin contactId para ${phone}`);
       return;
     }
+    // Mapeo crítico: contactId → jid para enrutar outbound de GHL al JID correcto (especialmente con LID)
+    this.store.linkContact(contactId, jid);
+
     await ghl.sendInboundMessage({
       contactId,
       message: text,
       conversationProviderId: providerId,
       altId: `wa:${altId}`,
     });
-    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId}`);
+    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId} (jid=${jid})`);
   }
 
-  async _pushAIReplyToGHL({ jid, text }) {
-    // Las API públicas de GHL no documentan "registrar mensaje saliente ya enviado por nosotros"
-    // sin disparar el webhook outbound. Para el MVP marcamos el AI reply localmente en GHL como
-    // un evento de tipo SMS via inbound con prefijo "[bot] " para que se vea en la conversación.
-    // En una iteración siguiente se puede explorar /conversations/messages con flag específico.
+  async _pushAIReplyToGHL({ jid, phone, text }) {
     if (!this.store.ghl?.accessToken) return;
     const providerId = process.env.GHL_CONVERSATION_PROVIDER_ID;
     if (!providerId) return;
-    const phone = jidToPhone(jid);
-    if (!phone) return;
 
     const ghl = new GHLClient(this.store);
-    const contact = await ghl.findOrCreateContact({ phone });
-    const contactId = contact?.id;
+    // Reutiliza el contactId mapeado si existe
+    const existingContactId = this.store.getContactIdByJid(jid);
+    let contactId = existingContactId;
+    if (!contactId) {
+      const contact = await ghl.findOrCreateContact({ phone });
+      contactId = contact?.id;
+      if (contactId) this.store.linkContact(contactId, jid);
+    }
     if (!contactId) return;
     await ghl.sendInboundMessage({
       contactId,

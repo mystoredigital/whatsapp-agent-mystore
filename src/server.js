@@ -315,20 +315,24 @@ export function startServer(port = 3000) {
     // GHL → nosotros cuando el operador escribe en la UI de Conversations.
     // Payload típico: { type, locationId, contactId, messageId, message, phone, attachments, userId }
     const body = req.body || {};
-    const { locationId, phone, message, messageId } = body;
-    console.log(`[webhook outbound] location=${locationId} phone=${phone} msgId=${messageId}`);
+    const { locationId, contactId, phone, message, messageId } = body;
+    console.log(`[webhook outbound] location=${locationId} contact=${contactId} phone=${phone} msgId=${messageId}`);
 
-    // Responder 200 rápido a GHL antes de hacer el trabajo
     res.json({ ok: true, queued: true });
 
     try {
-      if (!locationId || !phone || !message) return;
+      if (!locationId || !message) return;
       const tenant = tenants.get(locationId);
       if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
       const session = tenants.session(locationId);
       if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
-      const jid = phoneToJid(phone);
-      if (!jid) return console.warn(`[webhook outbound] phone inválido: ${phone}`);
+
+      // 1) intentar resolver JID via contactId (correcto incluso con LID)
+      let jid = contactId ? tenant.getJidByContactId(contactId) : null;
+      // 2) fallback: convertir phone → JID estándar (solo válido si no es LID)
+      if (!jid && phone) jid = phoneToJid(phone);
+      if (!jid) return console.warn(`[webhook outbound] no se pudo resolver jid: contactId=${contactId} phone=${phone}`);
+
       session.markOutboundSent(messageId);
       await session.send(jid, message, { skipGhlMirror: true });
       console.log(`[webhook outbound] enviado a ${jid}`);
