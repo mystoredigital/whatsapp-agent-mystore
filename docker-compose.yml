@@ -29,6 +29,7 @@ services:
       GHL_SHARED_SECRET: ${GHL_SHARED_SECRET}
       GHL_CONVERSATION_PROVIDER_ID: ${GHL_CONVERSATION_PROVIDER_ID}
       GHL_REDIRECT_URI: ${GHL_REDIRECT_URI}
+      GHL_WEBHOOK_PUBLIC_KEY: ${GHL_WEBHOOK_PUBLIC_KEY}
     labels:
       - traefik.enable=true
       - traefik.http.routers.whatsapp-agent-mystore.entrypoints=websecure

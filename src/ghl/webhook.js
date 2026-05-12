@@ -28,7 +28,8 @@ export function ghlWebhookGuard(req, res, next) {
   // GET (validación del delivery URL en el panel de GHL) — no se firma
   if (req.method !== 'POST') return next();
 
-  const publicKey = process.env.GHL_WEBHOOK_PUBLIC_KEY;
+  // Aceptamos PEM con saltos reales O con \n escapados (.env single-line)
+  const publicKey = process.env.GHL_WEBHOOK_PUBLIC_KEY?.replace(/\\n/g, '\n');
   if (!publicKey) {
     if (!warnedMissingKey) {
       console.warn('[webhook guard] GHL_WEBHOOK_PUBLIC_KEY no configurado — aceptando webhooks sin firma (NO usar en producción)');
