@@ -7,6 +7,7 @@ import {
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcode from 'qrcode';
+import fs from 'node:fs/promises';
 import { generateReply } from './ai.js';
 import { GHLClient } from './ghl/client.js';
 import { resolvePhoneAndJid } from './ghl/phone.js';
@@ -193,5 +194,19 @@ export class WhatsAppSession {
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
     if (opts.skipGhlMirror) return;
     // Si vino desde GHL outbound webhook, ya está en GHL → skip mirror para evitar duplicado
+  }
+
+  // Cierra sock, borra creds Baileys y reinicia para forzar nuevo QR.
+  // Necesario cuando se removió el dispositivo desde el celular (code=401 / loggedOut)
+  // — el authDir conserva creds inválidas que Baileys no recupera solo.
+  async relink() {
+    clearTimeout(this._reconnectTimer);
+    try { await this.sock?.logout(); } catch {}
+    try { this.sock?.end(); } catch {}
+    this.sock = null;
+    await fs.rm(this.store.authDir, { recursive: true, force: true });
+    this.store.setConnection('disconnected');
+    console.log(`[wa:${this.store.tenantId}] relink: authDir borrado, reiniciando…`);
+    return this.start();
   }
 }

@@ -172,6 +172,16 @@ export function startServer(port = 3000) {
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
+  app.post('/api/relink', async (req, res) => {
+    try {
+      const t = getTenant(req);
+      const session = tenants.session(t.tenantId);
+      if (!session) return res.status(404).json({ error: 'session no existe' });
+      session.relink().catch((e) => console.error(`[relink ${t.tenantId}]`, e.message));
+      res.json({ ok: true });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
   app.post('/api/send', async (req, res) => {
     try {
       const t = getTenant(req);

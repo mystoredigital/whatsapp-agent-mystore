@@ -38,12 +38,31 @@ function renderConnection() {
   };
   el.textContent = labels[state.connection.state] || state.connection.state;
 
+  // Botón re-link: solo visible cuando hay que regenerar QR (logged_out)
+  $('btnRelink').classList.toggle('hidden', state.connection.state !== 'logged_out');
+
   const modal = $('qrModal');
   if (state.connection.state === 'qr' && state.connection.qr) {
     $('qrImg').src = state.connection.qr;
     modal.classList.remove('hidden');
   } else {
     modal.classList.add('hidden');
+  }
+}
+
+async function relink() {
+  if (!confirm('Cerrar la sesión actual y generar un QR nuevo?')) return;
+  $('btnRelink').disabled = true;
+  $('btnRelink').textContent = 'Reiniciando…';
+  try {
+    await fetch('/api/relink', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant: state.tenantId }),
+    });
+  } finally {
+    $('btnRelink').disabled = false;
+    $('btnRelink').textContent = 'Re-link QR';
   }
 }
 
@@ -189,6 +208,7 @@ $('btnPrompt').addEventListener('click', () => {
 $('promptCancel').addEventListener('click', () => $('promptModal').classList.add('hidden'));
 $('promptSave').addEventListener('click', savePrompt);
 $('tenantSelect').addEventListener('change', (e) => switchTenant(e.target.value));
+$('btnRelink').addEventListener('click', relink);
 
 socket.emit('subscribe', state.tenantId);
 socket.on('state', (snap) => {

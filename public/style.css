@@ -167,3 +167,4 @@ body.embed .topbar { padding:8px 16px; }
   resize: vertical;
 }
 .modal-body .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.hidden { display: none !important; }
