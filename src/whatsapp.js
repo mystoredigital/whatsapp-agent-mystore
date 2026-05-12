@@ -31,6 +31,13 @@ export class WhatsAppSession {
     this.sock = null;
     this._reconnectTimer = null;
     this._outboundSeen = new Set();
+    this._sentByUs = new Set();
+  }
+
+  _rememberSentByUs(messageId) {
+    if (!messageId) return;
+    this._sentByUs.add(messageId);
+    setTimeout(() => this._sentByUs.delete(messageId), 5 * 60_000);
   }
 
   // Marca un messageId como "ya enviado por nosotros" para evitar loops cuando
@@ -93,12 +100,22 @@ export class WhatsAppSession {
   }
 
   async _handleIncoming(msg) {
-    if (!msg.message || msg.key.fromMe) return;
+    if (!msg.message) return;
     const jid = msg.key.remoteJid;
     if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
 
     const text = extractText(msg.message);
     if (!text.trim()) return;
+
+    // Mensaje enviado desde otro dispositivo vinculado (p.ej. el celular del operador):
+    // lo registramos como reply manual y forzamos modo humano para que la IA no siga respondiendo.
+    if (msg.key.fromMe) {
+      if (this._sentByUs.has(msg.key.id)) return; // echo de algo que enviamos nosotros
+      this.store.addMessage(jid, { role: 'assistant', text, manual: true });
+      const current = this.store.getOrCreateConversation(jid);
+      if (current.mode !== 'human') this.store.setMode(jid, 'human');
+      return;
+    }
 
     // Resolver teléfono real (manejando LID mode)
     const resolved = resolvePhoneAndJid(msg);
@@ -125,7 +142,8 @@ export class WhatsAppSession {
         history: conv.messages,
       });
       if (reply && reply.trim()) {
-        await this.sock.sendMessage(jid, { text: reply });
+        const sent = await this.sock.sendMessage(jid, { text: reply });
+        this._rememberSentByUs(sent?.key?.id);
         this.store.addMessage(jid, { role: 'assistant', text: reply });
         // Mirror la respuesta de IA a GHL como inbound del lado business
         if (resolved?.phone) {
@@ -190,7 +208,8 @@ export class WhatsAppSession {
 
   async send(jid, text, opts = {}) {
     if (!this.sock) throw new Error('WhatsApp no conectado');
-    await this.sock.sendMessage(jid, { text });
+    const sent = await this.sock.sendMessage(jid, { text });
+    this._rememberSentByUs(sent?.key?.id);
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
     if (opts.skipGhlMirror) return;
     // Si vino desde GHL outbound webhook, ya está en GHL → skip mirror para evitar duplicado

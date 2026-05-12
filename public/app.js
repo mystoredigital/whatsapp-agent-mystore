@@ -230,6 +230,13 @@ socket.on('state', (snap) => {
   renderMessages();
 });
 socket.on('connection', ({ connection }) => { state.connection = connection; renderConnection(); });
+socket.on('mode', ({ jid, mode }) => {
+  const conv = state.conversations.find((c) => c.jid === jid);
+  if (!conv) return;
+  conv.mode = mode;
+  renderChatList();
+  if (jid === state.activeJid) renderMessages();
+});
 socket.on('message', ({ conversation }) => {
   const i = state.conversations.findIndex((c) => c.jid === conversation.jid);
   if (i >= 0) state.conversations[i] = conversation;
