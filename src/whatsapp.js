@@ -8,6 +8,8 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcode from 'qrcode';
 import { generateReply } from './ai.js';
+import { GHLClient } from './ghl/client.js';
+import { jidToPhone } from './ghl/phone.js';
 
 const logger = pino({ level: 'warn' });
 
@@ -27,6 +29,18 @@ export class WhatsAppSession {
     this.store = store;
     this.sock = null;
     this._reconnectTimer = null;
+    this._outboundSeen = new Set();
+  }
+
+  // Marca un messageId como "ya enviado por nosotros" para evitar loops cuando
+  // GHL devuelve el outbound webhook de un mensaje que originamos.
+  markOutboundSent(messageId) {
+    if (!messageId) return;
+    this._outboundSeen.add(messageId);
+    setTimeout(() => this._outboundSeen.delete(messageId), 60_000);
+  }
+  isOutboundSeen(messageId) {
+    return messageId ? this._outboundSeen.has(messageId) : false;
   }
 
   async start() {
@@ -88,6 +102,11 @@ export class WhatsAppSession {
     const name = msg.pushName || undefined;
     const conv = this.store.addMessage(jid, { role: 'user', text }, name);
 
+    // Mirror a GHL si el tenant está conectado
+    this._pushInboundToGHL({ jid, text, name, altId: msg.key.id }).catch((e) =>
+      console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message)
+    );
+
     if (conv.mode !== 'ai') return;
 
     try {
@@ -99,6 +118,11 @@ export class WhatsAppSession {
       if (reply && reply.trim()) {
         await this.sock.sendMessage(jid, { text: reply });
         this.store.addMessage(jid, { role: 'assistant', text: reply });
+        // Mirror la respuesta de IA a GHL como inbound del lado business
+        // (GHL no tiene endpoint público "external outbound", así que la pintamos como un nota interna por ahora)
+        this._pushAIReplyToGHL({ jid, text: reply }).catch((e) =>
+          console.error(`[ghl:${this.store.tenantId}] push reply`, e.message)
+        );
       }
       await this.sock.sendPresenceUpdate('paused', jid);
     } catch (e) {
@@ -107,9 +131,56 @@ export class WhatsAppSession {
     }
   }
 
-  async send(jid, text) {
+  async _pushInboundToGHL({ jid, text, name, altId }) {
+    if (!this.store.ghl?.accessToken) return;
+    const providerId = process.env.GHL_CONVERSATION_PROVIDER_ID;
+    if (!providerId) return;
+    const phone = jidToPhone(jid);
+    if (!phone) return;
+
+    const ghl = new GHLClient(this.store);
+    const contact = await ghl.findOrCreateContact({ phone, name });
+    const contactId = contact?.id;
+    if (!contactId) {
+      console.warn(`[ghl:${this.store.tenantId}] sin contactId para ${phone}`);
+      return;
+    }
+    await ghl.sendInboundMessage({
+      contactId,
+      message: text,
+      conversationProviderId: providerId,
+      altId: `wa:${altId}`,
+    });
+    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId}`);
+  }
+
+  async _pushAIReplyToGHL({ jid, text }) {
+    // Las API públicas de GHL no documentan "registrar mensaje saliente ya enviado por nosotros"
+    // sin disparar el webhook outbound. Para el MVP marcamos el AI reply localmente en GHL como
+    // un evento de tipo SMS via inbound con prefijo "[bot] " para que se vea en la conversación.
+    // En una iteración siguiente se puede explorar /conversations/messages con flag específico.
+    if (!this.store.ghl?.accessToken) return;
+    const providerId = process.env.GHL_CONVERSATION_PROVIDER_ID;
+    if (!providerId) return;
+    const phone = jidToPhone(jid);
+    if (!phone) return;
+
+    const ghl = new GHLClient(this.store);
+    const contact = await ghl.findOrCreateContact({ phone });
+    const contactId = contact?.id;
+    if (!contactId) return;
+    await ghl.sendInboundMessage({
+      contactId,
+      message: `🤖 ${text}`,
+      conversationProviderId: providerId,
+    });
+  }
+
+  async send(jid, text, opts = {}) {
     if (!this.sock) throw new Error('WhatsApp no conectado');
     await this.sock.sendMessage(jid, { text });
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
+    if (opts.skipGhlMirror) return;
+    // Si vino desde GHL outbound webhook, ya está en GHL → skip mirror para evitar duplicado
   }
 }

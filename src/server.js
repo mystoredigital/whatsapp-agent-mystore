@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
+import { phoneToJid } from './ghl/phone.js';
 
 function basicAuth(req, res, next) {
   // No autenticar rutas públicas necesarias para el flujo GHL
@@ -232,14 +233,35 @@ export function startServer(port = 3000) {
     }
   });
 
-  // --- GHL webhooks (stubs por ahora) ---
-  app.post('/webhooks/ghl/outbound', (req, res) => {
-    console.log('[webhook ghl outbound] payload:', JSON.stringify(req.body).slice(0, 500));
-    // Phase 3: enrutar a Baileys del tenant correcto
-    res.json({ ok: true, received: true, note: 'Phase 3 — not yet routed to WhatsApp' });
+  // --- GHL webhooks ---
+  app.post('/webhooks/ghl/outbound', async (req, res) => {
+    // GHL → nosotros cuando el operador escribe en la UI de Conversations.
+    // Payload típico: { type, locationId, contactId, messageId, message, phone, attachments, userId }
+    const body = req.body || {};
+    const { locationId, phone, message, messageId } = body;
+    console.log(`[webhook outbound] location=${locationId} phone=${phone} msgId=${messageId}`);
+
+    // Responder 200 rápido a GHL antes de hacer el trabajo
+    res.json({ ok: true, queued: true });
+
+    try {
+      if (!locationId || !phone || !message) return;
+      const tenant = tenants.get(locationId);
+      if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
+      const session = tenants.session(locationId);
+      if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
+      const jid = phoneToJid(phone);
+      if (!jid) return console.warn(`[webhook outbound] phone inválido: ${phone}`);
+      session.markOutboundSent(messageId);
+      await session.send(jid, message, { skipGhlMirror: true });
+      console.log(`[webhook outbound] enviado a ${jid}`);
+    } catch (e) {
+      console.error('[webhook outbound] error post-ack:', e.message);
+    }
   });
 
   app.post('/webhooks/ghl', (req, res) => {
+    // Webhook genérico para eventos como ContactCreate, etc. — por ahora solo log.
     console.log('[webhook ghl] type:', req.body?.type, 'location:', req.body?.locationId);
     res.json({ ok: true });
   });
