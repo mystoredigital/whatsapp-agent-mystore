@@ -8,7 +8,7 @@ const state = {
   tenantId: params.get('tenant') || '_local',
   tenants: [],
   conversations: [],
-  config: { systemPrompt: '' },
+  config: { systemPrompt: '', aiEnabled: true },
   connection: { state: 'disconnected', qr: null },
   meta: null,
   ghl: null,
@@ -95,8 +95,28 @@ function renderMetrics() {
     cell('rate', m.skippedRateLimit, true),
     cell('silencio', m.skippedQuietHours),
     cell('greylist', m.skippedGreylist),
+    cell('pausada', m.skippedAiDisabled || 0, true),
     cell('reconn', m.reconnects, true),
   ].join(' · ');
+}
+
+function renderAiGlobal() {
+  const wrap = $('aiGlobalToggle')?.closest('.ai-global');
+  const tog = $('aiGlobalToggle');
+  const lbl = $('aiGlobalLabel');
+  if (!wrap || !tog || !lbl) return;
+  const paused = state.config.aiEnabled === false;
+  tog.checked = paused;
+  wrap.classList.toggle('paused', paused);
+  lbl.textContent = paused ? 'IA pausada (todas)' : 'Modo humano global';
+}
+
+async function setAiEnabled(enabled) {
+  await fetch('/api/ai-enabled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant: state.tenantId, enabled }),
+  });
 }
 
 function renderChatList() {
@@ -223,9 +243,11 @@ async function loadState() {
   renderTenantBar();
   renderChatList();
   renderMessages();
+  renderAiGlobal();
 }
 
 $('modeToggle').addEventListener('change', (e) => state.activeJid && setMode(state.activeJid, e.target.checked ? 'human' : 'ai'));
+$('aiGlobalToggle').addEventListener('change', (e) => setAiEnabled(!e.target.checked));
 $('manualSend').addEventListener('click', sendManual);
 $('manualInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendManual(); });
 $('btnPrompt').addEventListener('click', () => {
@@ -249,9 +271,11 @@ socket.on('state', (snap) => {
   renderTenantBar();
   renderChatList();
   renderMessages();
+  renderAiGlobal();
 });
 socket.on('connection', ({ connection }) => { state.connection = connection; renderConnection(); });
 socket.on('metrics', ({ metrics }) => { state.metrics = metrics; renderMetrics(); });
+socket.on('config', ({ config }) => { state.config = config; renderAiGlobal(); });
 socket.on('mode', ({ jid, mode }) => {
   const conv = state.conversations.find((c) => c.jid === jid);
   if (!conv) return;

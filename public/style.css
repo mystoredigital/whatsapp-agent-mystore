@@ -26,6 +26,10 @@ body {
 .metrics .val { color:#e7e9ea; }
 .metrics .warn { color:#ffb300; }
 
+.ai-global { display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:4px 10px;border-radius:6px;border:1px solid #2f4150;background:#1a2530; }
+.ai-global input { cursor:pointer; }
+.ai-global.paused { background:#5a3a14;border-color:#ffb300;color:#ffb300; }
+
 /* Modo embed (iframe en GHL) */
 body.embed .brand { display:none; }
 body.embed #tenantSelect { display:none; }

@@ -87,6 +87,7 @@ export class WhatsAppSession {
       skippedRateLimit: 0,
       skippedQuietHours: 0,
       skippedGreylist: 0,
+      skippedAiDisabled: 0,
       reconnects: 0,
     };
   }
@@ -207,6 +208,14 @@ export class WhatsAppSession {
     }
 
     if (conv.mode !== 'ai') return;
+
+    // Kill switch global: si el operador pausó la IA para todo el tenant, saltar
+    // sin tocar el modo per-chat (cuando se reactive, el flujo vuelve a su estado).
+    if (this.store.config.aiEnabled === false) {
+      console.log(`[wa:${this.store.tenantId}] IA pausada globalmente, skip ${jid}`);
+      this._bump('skippedAiDisabled');
+      return;
+    }
 
     // Greylist: primer mensaje de un contacto nuevo → operador humano lo atiende.
     if (NEW_CONTACT_REQUIRES_HUMAN) {

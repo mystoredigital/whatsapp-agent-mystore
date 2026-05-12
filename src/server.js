@@ -176,6 +176,16 @@ export function startServer(port = 3000) {
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
+  app.post('/api/ai-enabled', (req, res) => {
+    try {
+      const t = getTenant(req);
+      const { enabled } = req.body || {};
+      if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled (boolean) requerido' });
+      t.setAiEnabled(enabled);
+      res.json({ ok: true, aiEnabled: t.config.aiEnabled });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
   app.post('/api/relink', async (req, res) => {
     try {
       const t = getTenant(req);

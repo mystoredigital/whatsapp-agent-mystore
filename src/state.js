@@ -33,7 +33,7 @@ export class TenantStore extends EventEmitter {
     this.contactsFile = path.join(this.dir, 'contacts.json');
 
     this.conversations = new Map();
-    this.config = { systemPrompt: DEFAULT_PROMPT };
+    this.config = { systemPrompt: DEFAULT_PROMPT, aiEnabled: true };
     this.connection = { state: 'disconnected', qr: null };
     this.meta = { tenantId, kind: meta.kind || 'local', ...meta };
     this.ghl = null;
@@ -135,6 +135,12 @@ export class TenantStore extends EventEmitter {
 
   setPrompt(prompt) {
     this.config.systemPrompt = prompt;
+    this.persistConfig().catch(() => {});
+    this.emit('config', { tenantId: this.tenantId, config: this.config });
+  }
+
+  setAiEnabled(enabled) {
+    this.config.aiEnabled = !!enabled;
     this.persistConfig().catch(() => {});
     this.emit('config', { tenantId: this.tenantId, config: this.config });
   }
