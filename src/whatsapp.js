@@ -11,7 +11,7 @@ import qrcode from 'qrcode';
 import fs from 'node:fs/promises';
 import { generateReply } from './ai.js';
 import { GHLClient } from './ghl/client.js';
-import { resolvePhoneAndJid } from './ghl/phone.js';
+import { resolvePhoneAndJid, jidToPhone } from './ghl/phone.js';
 import { uploadBufferToR2, downloadUrlToBuffer, mimeToWa, isMediaConfigured } from './media.js';
 
 const logger = pino({ level: 'warn' });
@@ -229,9 +229,33 @@ export class WhatsAppSession {
     // lo registramos como reply manual y forzamos modo humano para que la IA no siga respondiendo.
     if (msg.key.fromMe) {
       if (this._sentByUs.has(msg.key.id)) return; // echo de algo que enviamos nosotros
-      this.store.addMessage(jid, { role: 'assistant', text, manual: true });
+
+      // Procesar media adjunta si la hay (operador mandó imagen desde el celular)
+      let fromMeAttachment = null;
+      const fromMeMedia = extractMediaInfo(msg.message);
+      if (fromMeMedia && isMediaConfigured()) {
+        fromMeAttachment = await this._processIncomingMedia(msg, fromMeMedia).catch((e) => {
+          console.error(`[media:${this.store.tenantId}] fromMe`, e.message);
+          return null;
+        });
+      }
+
+      this.store.addMessage(jid, {
+        role: 'assistant', manual: true, text,
+        ...(fromMeAttachment ? { attachment: fromMeAttachment } : {}),
+      });
       const current = this.store.getOrCreateConversation(jid);
       if (current.mode !== 'human') this.store.setMode(jid, 'human');
+
+      // Mirror a GHL para que el operador en GHL vea lo que envió desde el celular.
+      // Resolver phone — en fromMe el remoteJid es el cliente, no el operador.
+      const fromMeResolved = resolvePhoneAndJid(msg);
+      if (fromMeResolved?.phone) {
+        this._pushOperatorToGHL({
+          jid, phone: fromMeResolved.phone, text,
+          attachments: fromMeAttachment ? [fromMeAttachment.url] : [],
+        }).catch((e) => console.error(`[ghl:${this.store.tenantId}] push fromMe`, e.message));
+      }
       return;
     }
 
@@ -399,24 +423,36 @@ export class WhatsAppSession {
   }
 
   async _pushAIReplyToGHL({ jid, phone, text }) {
+    return this._pushAssistantToGHL({ jid, phone, text, prefix: '🤖 ' });
+  }
+
+  // Mensajes del operador originados FUERA de GHL (desde dashboard local o desde
+  // el celular vinculado) — los mirroreamos a GHL para que el operador trabajando
+  // en GHL Conversations vea el hilo completo.
+  async _pushOperatorToGHL({ jid, phone, text, attachments }) {
+    return this._pushAssistantToGHL({ jid, phone, text, attachments, prefix: '👤 ' });
+  }
+
+  async _pushAssistantToGHL({ jid, phone, text, attachments, prefix = '' }) {
     if (!this.store.ghl?.accessToken) return;
     const providerId = this.store.ghl.conversationProviderId || process.env.GHL_CONVERSATION_PROVIDER_ID;
     if (!providerId) return;
 
     const ghl = new GHLClient(this.store);
     // Reutiliza el contactId mapeado si existe
-    const existingContactId = this.store.getContactIdByJid(jid);
-    let contactId = existingContactId;
-    if (!contactId) {
+    let contactId = this.store.getContactIdByJid(jid);
+    if (!contactId && phone) {
       const contact = await ghl.findOrCreateContact({ phone });
       contactId = contact?.id;
       if (contactId) this.store.linkContact(contactId, jid);
     }
     if (!contactId) return;
+    const message = (text || '').trim() ? `${prefix}${text}` : prefix.trim();
     await ghl.sendInboundMessage({
       contactId,
-      message: `🤖 ${text}`,
+      message,
       conversationProviderId: providerId,
+      attachments,
     });
   }
 
@@ -426,7 +462,13 @@ export class WhatsAppSession {
     this._rememberSentByUs(sent?.key?.id);
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
     if (opts.skipGhlMirror) return;
-    // Si vino desde GHL outbound webhook, ya está en GHL → skip mirror para evitar duplicado
+    // Mensaje originado fuera de GHL (dashboard) → mirroreamos para que aparezca en GHL Conversations
+    const phone = jidToPhone(jid);
+    if (phone) {
+      this._pushOperatorToGHL({ jid, phone, text }).catch((e) =>
+        console.error(`[ghl:${this.store.tenantId}] push manual`, e.message)
+      );
+    }
   }
 
   // Envía una media (imagen/video/audio/documento) a un JID. La URL puede ser de R2
@@ -451,6 +493,12 @@ export class WhatsAppSession {
       attachment: { url, mimetype: finalMime, type: waType, ...(fileName ? { fileName } : {}), ...(ptt ? { ptt: true } : {}) },
     });
     if (opts.skipGhlMirror) return;
+    const phone = jidToPhone(jid);
+    if (phone) {
+      this._pushOperatorToGHL({ jid, phone, text: caption || '', attachments: [url] }).catch((e) =>
+        console.error(`[ghl:${this.store.tenantId}] push manual media`, e.message)
+      );
+    }
   }
 
   // Cierra sock, borra creds Baileys y reinicia para forzar nuevo QR.
