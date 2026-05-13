@@ -127,6 +127,16 @@ body.embed .topbar { padding:8px 16px; }
 .bubble.system { align-self: center; background: #5a1a1a; font-size: 12px; }
 .bubble.manual { background: #4a3a14; color: #fff; }
 .bubble .time { display: block; font-size: 10px; opacity: 0.6; margin-top: 4px; }
+.bubble img, .bubble video { max-width: 100%; max-height: 320px; border-radius: 8px; display: block; }
+.bubble audio { display: block; max-width: 100%; }
+.bubble .doc-link { display: inline-block; padding: 6px 10px; background: rgba(0,0,0,0.2); border-radius: 6px; color: inherit; text-decoration: none; font-size: 13px; }
+.bubble .doc-link::before { content: '📎 '; }
+.bubble .caption { margin-top: 6px; }
+
+.attach-btn { display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;background:#243240;color:#8899a6;border:1px solid #2f4150;border-radius:6px;cursor:pointer;font-size:18px;line-height:1; }
+.attach-btn:hover { background:#2d3e4f;color:#e7e9ea; }
+.attach-btn.disabled { opacity:0.4;cursor:not-allowed; }
+.attach-btn.staged { color:#1d9bf0;border-color:#1d9bf0; }
 
 .composer {
   display: flex;

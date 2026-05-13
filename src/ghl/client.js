@@ -81,7 +81,7 @@ export class GHLClient {
     return await this.createContact({ phone, name });
   }
 
-  async sendInboundMessage({ contactId, message, conversationProviderId, altId, type = 'Custom' }) {
+  async sendInboundMessage({ contactId, message, conversationProviderId, altId, attachments, type = 'Custom' }) {
     return this._req('POST', '/conversations/messages/inbound', {
       json: {
         type,
@@ -89,6 +89,7 @@ export class GHLClient {
         message,
         conversationProviderId,
         ...(altId ? { altId } : {}),
+        ...(attachments && attachments.length ? { attachments } : {}),
       },
     });
   }

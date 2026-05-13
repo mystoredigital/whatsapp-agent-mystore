@@ -180,14 +180,37 @@ function renderMessages() {
   const isHuman = conv.mode === 'human';
   $('manualInput').disabled = !isHuman;
   $('manualSend').disabled = !isHuman;
+  $('manualFile').disabled = !isHuman;
+  $('manualFile').parentElement.classList.toggle('disabled', !isHuman);
 
   for (const m of conv.messages) {
     const div = document.createElement('div');
     div.className = `bubble ${m.manual ? 'manual' : m.role}`;
-    div.innerHTML = `${escapeHtml(m.text)}<span class="time">${fmtTime(m.ts)}</span>`;
+    div.innerHTML = renderBubbleBody(m) + `<span class="time">${fmtTime(m.ts)}</span>`;
     wrap.appendChild(div);
   }
   wrap.scrollTop = wrap.scrollHeight;
+}
+
+function renderBubbleBody(m) {
+  let html = '';
+  if (m.attachment && m.attachment.url) {
+    const { url, type, mimetype, fileName } = m.attachment;
+    const safeUrl = escapeHtml(url);
+    if (type === 'image' || type === 'sticker') {
+      html += `<img src="${safeUrl}" alt="" loading="lazy">`;
+    } else if (type === 'video') {
+      html += `<video src="${safeUrl}" controls preload="metadata"></video>`;
+    } else if (type === 'audio' || type === 'voice') {
+      html += `<audio src="${safeUrl}" controls preload="metadata"></audio>`;
+    } else {
+      html += `<a class="doc-link" href="${safeUrl}" target="_blank" rel="noopener">${escapeHtml(fileName || mimetype || 'archivo')}</a>`;
+    }
+  }
+  if (m.text && m.text.trim()) {
+    html += `<div class="caption">${escapeHtml(m.text)}</div>`;
+  }
+  return html;
 }
 
 function displayName(conv) {
@@ -217,15 +240,53 @@ async function setMode(jid, mode) {
   });
 }
 
+let _stagedFile = null;
+
+function stageFile(file) {
+  _stagedFile = file || null;
+  const btn = $('manualFile').parentElement;
+  if (file) {
+    btn.classList.add('staged');
+    btn.title = `Adjunto listo: ${file.name} (${Math.round(file.size / 1024)} KB) — click para cambiar`;
+  } else {
+    btn.classList.remove('staged');
+    btn.title = 'Adjuntar archivo';
+  }
+}
+
 async function sendManual() {
+  if (!state.activeJid) return;
   const text = $('manualInput').value.trim();
-  if (!text || !state.activeJid) return;
-  $('manualInput').value = '';
-  await fetch('/api/send', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant: state.tenantId, jid: state.activeJid, text }),
-  });
+  if (!text && !_stagedFile) return;
+
+  const sendBtn = $('manualSend');
+  sendBtn.disabled = true;
+  try {
+    if (_stagedFile) {
+      const fd = new FormData();
+      fd.append('tenant', state.tenantId);
+      fd.append('jid', state.activeJid);
+      if (text) fd.append('caption', text);
+      fd.append('file', _stagedFile);
+      const r = await fetch(`/api/send-media?tenant=${encodeURIComponent(state.tenantId)}`, { method: 'POST', body: fd });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert('Error enviando media: ' + (err.error || r.status));
+        return;
+      }
+      stageFile(null);
+      $('manualFile').value = '';
+    } else {
+      await fetch('/api/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant: state.tenantId, jid: state.activeJid, text }),
+      });
+    }
+    $('manualInput').value = '';
+  } finally {
+    sendBtn.disabled = false;
+  }
 }
 
 async function savePrompt() {
@@ -274,6 +335,7 @@ $('modeToggle').addEventListener('change', (e) => state.activeJid && setMode(sta
 $('aiGlobalToggle').addEventListener('change', (e) => setAiEnabled(!e.target.checked));
 $('manualSend').addEventListener('click', sendManual);
 $('manualInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendManual(); });
+$('manualFile').addEventListener('change', (e) => stageFile(e.target.files?.[0] || null));
 $('btnPrompt').addEventListener('click', () => {
   $('promptText').value = state.config.systemPrompt;
   $('promptModal').classList.remove('hidden');

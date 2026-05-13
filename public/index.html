@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>My Store · WhatsApp Agent</title>
-<link rel="stylesheet" href="/style.css?v=20260512d" />
+<link rel="stylesheet" href="/style.css?v=20260512e" />
 </head>
 <body>
 <header class="topbar">
@@ -38,6 +38,10 @@
     </header>
     <div class="messages" id="messages"></div>
     <footer class="composer">
+      <label class="attach-btn" title="Adjuntar archivo">
+        <input type="file" id="manualFile" hidden accept="image/*,video/*,audio/*,application/pdf,application/*" />
+        <span id="attachIcon">📎</span>
+      </label>
       <input type="text" id="manualInput" placeholder="Mensaje manual (modo humano)…" disabled />
       <button id="manualSend" class="btn primary" disabled>Enviar</button>
     </footer>
@@ -64,6 +68,6 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app.js?v=20260512d"></script>
+<script src="/app.js?v=20260512e"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ import {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from 'baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -11,6 +12,7 @@ import fs from 'node:fs/promises';
 import { generateReply } from './ai.js';
 import { GHLClient } from './ghl/client.js';
 import { resolvePhoneAndJid } from './ghl/phone.js';
+import { uploadBufferToR2, downloadUrlToBuffer, mimeToWa, isMediaConfigured } from './media.js';
 
 const logger = pino({ level: 'warn' });
 
@@ -69,8 +71,34 @@ function extractText(message) {
     message.extendedTextMessage?.text ||
     message.imageMessage?.caption ||
     message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
     ''
   );
+}
+
+// Detecta media en un message proto, devuelve null si no hay.
+function extractMediaInfo(message) {
+  if (!message) return null;
+  if (message.imageMessage)
+    return { type: 'image', mimetype: message.imageMessage.mimetype || 'image/jpeg' };
+  if (message.videoMessage)
+    return { type: 'video', mimetype: message.videoMessage.mimetype || 'video/mp4' };
+  if (message.audioMessage)
+    return {
+      type: message.audioMessage.ptt ? 'voice' : 'audio',
+      mimetype: message.audioMessage.mimetype || 'audio/ogg',
+      ptt: !!message.audioMessage.ptt,
+      seconds: message.audioMessage.seconds,
+    };
+  if (message.documentMessage)
+    return {
+      type: 'document',
+      mimetype: message.documentMessage.mimetype || 'application/octet-stream',
+      fileName: message.documentMessage.fileName,
+    };
+  if (message.stickerMessage)
+    return { type: 'sticker', mimetype: message.stickerMessage.mimetype || 'image/webp' };
+  return null;
 }
 
 export class WhatsAppSession {
@@ -195,11 +223,33 @@ export class WhatsAppSession {
     const resolved = resolvePhoneAndJid(msg);
 
     const name = msg.pushName || resolved?.phone || undefined;
-    const conv = this.store.addMessage(jid, { role: 'user', text }, name);
+
+    // Si hay media, descargarla y subirla a R2 antes de registrar el mensaje
+    let attachment = null;
+    const mediaInfo = extractMediaInfo(msg.message);
+    if (mediaInfo && isMediaConfigured()) {
+      attachment = await this._processIncomingMedia(msg, mediaInfo).catch((e) => {
+        console.error(`[media:${this.store.tenantId}]`, e.message);
+        this.store.addMessage(jid, { role: 'system', text: `⚠️ Falló descarga de media: ${e.message}` });
+        return null;
+      });
+    }
+
+    // Si no hay texto y tampoco se logró subir media → ignora (mensajes solo-sticker con upload fallido)
+    if (!text.trim() && !attachment) return;
+
+    const conv = this.store.addMessage(
+      jid,
+      { role: 'user', text, ...(attachment ? { attachment } : {}) },
+      name
+    );
 
     // Mirror a GHL si el tenant está conectado Y tenemos teléfono real
     if (resolved?.phone) {
-      this._pushInboundToGHL({ jid, phone: resolved.phone, text, name, altId: msg.key.id }).catch((e) => {
+      this._pushInboundToGHL({
+        jid, phone: resolved.phone, text, name, altId: msg.key.id,
+        attachments: attachment ? [attachment.url] : [],
+      }).catch((e) => {
         console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message);
         this.store.addMessage(jid, { role: 'system', text: `⚠️ Push GHL falló: ${e.message}` });
       });
@@ -208,6 +258,10 @@ export class WhatsAppSession {
     }
 
     if (conv.mode !== 'ai') return;
+
+    // Media-only (sin texto ni caption): IA no puede procesar imágenes/audio aún,
+    // dejamos que el operador conteste manualmente desde el dashboard o GHL.
+    if (!text.trim()) return;
 
     // Kill switch global: si el operador pausó la IA para todo el tenant, saltar
     // sin tocar el modo per-chat (cuando se reactive, el flujo vuelve a su estado).
@@ -272,7 +326,28 @@ export class WhatsAppSession {
     }
   }
 
-  async _pushInboundToGHL({ jid, phone, text, name, altId }) {
+  // Descarga la media del mensaje Baileys y la sube a R2.
+  // Devuelve { url, mimetype, type, fileName? } o lanza.
+  async _processIncomingMedia(msg, info) {
+    const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger });
+    if (!buffer || !buffer.length) throw new Error('buffer vacío');
+    const { ext, waType } = mimeToWa(info.mimetype);
+    const uploaded = await uploadBufferToR2(buffer, {
+      contentType: info.mimetype,
+      extension: info.fileName ? info.fileName.split('.').pop() : ext,
+      prefix: `wa/${this.store.tenantId}`,
+    });
+    return {
+      url: uploaded.url,
+      mimetype: info.mimetype,
+      type: info.type || waType,
+      ...(info.fileName ? { fileName: info.fileName } : {}),
+      ...(info.ptt ? { ptt: true } : {}),
+      ...(info.seconds ? { seconds: info.seconds } : {}),
+    };
+  }
+
+  async _pushInboundToGHL({ jid, phone, text, name, altId, attachments }) {
     if (!this.store.ghl?.accessToken) return;
     // Preferir el providerId per-tenant (creado en OAuth callback); fallback al env var
     // para no romper la sub-account original que usaba el providerId del Marketplace.
@@ -294,8 +369,9 @@ export class WhatsAppSession {
       message: text,
       conversationProviderId: providerId,
       altId: `wa:${altId}`,
+      attachments,
     });
-    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId} (jid=${jid})`);
+    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId} (jid=${jid}) attachments=${(attachments || []).length}`);
   }
 
   async _pushAIReplyToGHL({ jid, phone, text }) {
@@ -327,6 +403,30 @@ export class WhatsAppSession {
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
     if (opts.skipGhlMirror) return;
     // Si vino desde GHL outbound webhook, ya está en GHL → skip mirror para evitar duplicado
+  }
+
+  // Envía una media (imagen/video/audio/documento) a un JID. La URL puede ser de R2
+  // (ya pública) o de GHL/externo — siempre se descarga a buffer y se envía como bytes
+  // por Baileys para evitar problemas de CDN.
+  async sendMedia(jid, { url, mimetype, fileName, caption, ptt }, opts = {}) {
+    if (!this.sock) throw new Error('WhatsApp no conectado');
+    const { buffer, contentType } = await downloadUrlToBuffer(url);
+    const finalMime = mimetype || contentType;
+    const { waType } = mimeToWa(finalMime);
+    const base = { caption: caption || undefined };
+    let payload;
+    if (waType === 'image') payload = { ...base, image: buffer, mimetype: finalMime };
+    else if (waType === 'video') payload = { ...base, video: buffer, mimetype: finalMime };
+    else if (waType === 'audio') payload = { audio: buffer, mimetype: finalMime, ptt: !!ptt };
+    else payload = { document: buffer, mimetype: finalMime, fileName: fileName || 'file' };
+    const sent = await this.sock.sendMessage(jid, payload);
+    this._rememberSentByUs(sent?.key?.id);
+    this.store.addMessage(jid, {
+      role: 'assistant', manual: true,
+      text: caption || '',
+      attachment: { url, mimetype: finalMime, type: waType, ...(fileName ? { fileName } : {}), ...(ptt ? { ptt: true } : {}) },
+    });
+    if (opts.skipGhlMirror) return;
   }
 
   // Cierra sock, borra creds Baileys y reinicia para forzar nuevo QR.

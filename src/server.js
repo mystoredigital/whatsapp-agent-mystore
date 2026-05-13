@@ -10,6 +10,7 @@ import { phoneToJid } from './ghl/phone.js';
 import { GHLClient } from './ghl/client.js';
 import { decryptGhlPayload, signSession, verifySession } from './ghl/sso.js';
 import { ghlWebhookGuard } from './ghl/webhook.js';
+import { uploadBufferToR2, mimeToWa, isMediaConfigured } from './media.js';
 
 // Decodifica un JWT GHL para inspeccionar scopes (sin verificación — solo para debug).
 function decodeJwtPayload(jwt) {
@@ -175,6 +176,46 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Mini-parser de multipart/form-data. Solo soporta un archivo + campos planos —
+// suficiente para /api/send-media. Evita añadir multer/busboy como dependencia.
+function parseMultipart(buf, boundary) {
+  const result = { fields: {}, files: {} };
+  const boundaryBuf = Buffer.from(boundary);
+  const endMarker = Buffer.from('--');
+  const data = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+
+  let pos = data.indexOf(boundaryBuf);
+  if (pos === -1) return result;
+  pos += boundaryBuf.length + 2; // skip CRLF after boundary
+
+  while (pos < data.length) {
+    const headerEnd = data.indexOf('\r\n\r\n', pos);
+    if (headerEnd === -1) break;
+    const headers = data.slice(pos, headerEnd).toString('utf8');
+    const bodyStart = headerEnd + 4;
+    const nextBoundary = data.indexOf(boundaryBuf, bodyStart);
+    if (nextBoundary === -1) break;
+    const body = data.slice(bodyStart, nextBoundary - 2); // strip CRLF antes del boundary
+
+    const disp = /content-disposition:\s*form-data;\s*name="([^"]+)"(?:;\s*filename="([^"]*)")?/i.exec(headers);
+    const ctMatch = /content-type:\s*([^\r\n]+)/i.exec(headers);
+    if (disp) {
+      const name = disp[1];
+      const filename = disp[2];
+      if (filename) {
+        result.files[name] = { filename, contentType: ctMatch?.[1]?.trim() || 'application/octet-stream', buffer: body };
+      } else {
+        result.fields[name] = body.toString('utf8');
+      }
+    }
+    // Si después de este boundary viene '--' es el end marker → terminar
+    const afterBoundary = nextBoundary + boundaryBuf.length;
+    if (data.subarray(afterBoundary, afterBoundary + 2).equals(endMarker)) break;
+    pos = afterBoundary + 2; // skip CRLF
+  }
+  return result;
+}
+
 function pageShell(title, body) {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <style>
@@ -331,6 +372,40 @@ export function startServer(port = 3000) {
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
+  // Sube un archivo a R2 y lo envía via WhatsApp. Body: multipart/form-data con
+  // 'file' (binario), 'jid' y opcional 'caption'. Tenant viene de query/cookie.
+  // Usamos multipart raw parser local para evitar añadir dependencias (multer/busboy).
+  app.post('/api/send-media', express.raw({ type: () => true, limit: '50mb' }), async (req, res) => {
+    try {
+      if (!isMediaConfigured()) return res.status(500).json({ error: 'R2 no configurado en el server' });
+      const t = getTenant(req);
+      const ct = req.headers['content-type'] || '';
+      const boundaryMatch = ct.match(/boundary=(?:"([^"]+)"|([^;]+))/);
+      if (!boundaryMatch) return res.status(400).json({ error: 'Content-Type debe ser multipart/form-data' });
+      const boundary = '--' + (boundaryMatch[1] || boundaryMatch[2]);
+      const parts = parseMultipart(req.body, boundary);
+      const jid = parts.fields.jid;
+      const caption = parts.fields.caption || '';
+      const file = parts.files.file;
+      if (!jid || !file) return res.status(400).json({ error: 'jid y file requeridos' });
+
+      const mimetype = file.contentType || 'application/octet-stream';
+      const { ext } = mimeToWa(mimetype);
+      const uploaded = await uploadBufferToR2(file.buffer, {
+        contentType: mimetype,
+        extension: file.filename ? file.filename.split('.').pop() : ext,
+        prefix: `wa/${t.tenantId}/manual`,
+      });
+
+      const session = tenants.session(t.tenantId);
+      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName: file.filename, caption });
+      res.json({ ok: true, url: uploaded.url });
+    } catch (e) {
+      console.error('[send-media]', e);
+      res.status(e.status || 500).json({ error: e.message });
+    }
+  });
+
   // --- GHL Embed SSO ---
   app.post('/api/embed/sso', async (req, res) => {
     try {
@@ -468,12 +543,14 @@ export function startServer(port = 3000) {
     // GHL → nosotros cuando el operador escribe en la UI de Conversations.
     // Payload típico: { type, locationId, contactId, messageId, message, phone, attachments, userId }
     const body = req.body || {};
-    const { locationId, contactId, phone, message, messageId } = body;
-    console.log(`[webhook outbound] location=${locationId} contact=${contactId} phone=${phone} msgId=${messageId}`);
+    const { locationId, contactId, phone, message, messageId, attachments } = body;
+    const hasMedia = Array.isArray(attachments) && attachments.length > 0;
+    console.log(`[webhook outbound] location=${locationId} contact=${contactId} phone=${phone} msgId=${messageId} attachments=${hasMedia ? attachments.length : 0}`);
 
     res.json({ ok: true, queued: true });
 
-    if (!locationId || !message) return;
+    if (!locationId) return;
+    if (!message && !hasMedia) return;
     const tenant = tenants.get(locationId);
     if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
     const session = tenants.session(locationId);
@@ -492,7 +569,19 @@ export function startServer(port = 3000) {
     let lastErr;
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
-        await session.send(jid, message, { skipGhlMirror: true });
+        if (hasMedia) {
+          // Enviar cada attachment como media, con el texto como caption del primero
+          for (let i = 0; i < attachments.length; i++) {
+            const url = typeof attachments[i] === 'string' ? attachments[i] : attachments[i]?.url;
+            if (!url) continue;
+            await session.sendMedia(jid, {
+              url,
+              caption: i === 0 ? (message || undefined) : undefined,
+            }, { skipGhlMirror: true });
+          }
+        } else {
+          await session.send(jid, message, { skipGhlMirror: true });
+        }
         if (tenant.getOrCreateConversation(jid).mode !== 'human') {
           tenant.setMode(jid, 'human');
           console.log(`[webhook outbound] modo humano activado para ${jid}`);
@@ -509,7 +598,7 @@ export function startServer(port = 3000) {
     console.error(`[webhook outbound] dropped tras ${delays.length + 1} intentos: ${lastErr?.message}`);
     tenant.addMessage(jid, {
       role: 'system',
-      text: `⚠️ Mensaje desde GHL no entregado tras ${delays.length + 1} intentos: ${lastErr?.message || 'desconocido'}\nContenido: ${message}`,
+      text: `⚠️ Mensaje desde GHL no entregado tras ${delays.length + 1} intentos: ${lastErr?.message || 'desconocido'}\nContenido: ${message || '(solo media)'}`,
     });
   });
 

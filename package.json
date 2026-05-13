@@ -12,6 +12,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@hapi/boom": "^10.0.1",
     "baileys": "^7.0.0-rc.4",
     "cookie-parser": "^1.4.7",
