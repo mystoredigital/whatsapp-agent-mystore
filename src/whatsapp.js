@@ -227,7 +227,8 @@ export class WhatsAppSession {
     if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
 
     const text = extractText(msg.message);
-    if (!text.trim()) return;
+    const earlyMediaCheck = extractMediaInfo(msg.message);
+    if (!text.trim() && !earlyMediaCheck) return;
 
     // Mensaje enviado desde otro dispositivo vinculado (p.ej. el celular del operador):
     // lo registramos como reply manual y forzamos modo humano para que la IA no siga respondiendo.
