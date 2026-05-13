@@ -293,7 +293,12 @@ export function startServer(port = 3000) {
   }));
   app.use(express.urlencoded({ extended: true }));
   app.use(authMiddleware);
-  app.use(express.static(path.resolve('./public')));
+  app.use(express.static(path.resolve('./public'), {
+    setHeaders: (res, p) => {
+      // No cachear HTML — los assets sí (cache buster en el query string)
+      if (p.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    },
+  }));
 
   // Servir /embed sin extensión
   app.get('/embed', (_req, res) => res.sendFile(path.resolve('./public/embed.html')));
@@ -384,13 +389,28 @@ export function startServer(port = 3000) {
     }
   });
 
-  app.post('/api/groups/toggle', (req, res) => {
+  app.post('/api/groups/toggle', async (req, res) => {
     try {
       const t = getTenant(req);
       const { jid, enabled } = req.body || {};
       if (!jid || !jid.endsWith('@g.us')) return res.status(400).json({ error: 'jid de grupo requerido (@g.us)' });
       if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled (boolean) requerido' });
       t.setGroupEnabled(jid, enabled);
+
+      // Al habilitar: crea conv placeholder con el nombre del grupo para que aparezca
+      // en la sidebar inmediatamente, sin esperar al primer mensaje nuevo.
+      if (enabled && !t.conversations.has(jid)) {
+        const session = tenants.session(t.tenantId);
+        let groupName = jid;
+        try {
+          if (session?.sock) {
+            const md = await session.sock.groupMetadata(jid);
+            groupName = md?.subject || jid;
+          }
+        } catch {}
+        const conv = t.getOrCreateConversation(jid, groupName);
+        t.emit('message', { tenantId: t.tenantId, jid, conversation: conv });
+      }
       res.json({ ok: true, enabled, enabledGroups: t.config.enabledGroups });
     } catch (e) {
       res.status(e.status || 500).json({ error: e.message });

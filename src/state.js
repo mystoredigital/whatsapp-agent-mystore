@@ -116,8 +116,15 @@ export class TenantStore extends EventEmitter {
         mode: isGroup ? 'human' : 'ai',
         messages: [], updatedAt: Date.now(),
       });
-    } else if (name && !this.conversations.get(jid).name) {
-      this.conversations.get(jid).name = name;
+    } else if (name && name.trim()) {
+      const conv = this.conversations.get(jid);
+      const current = (conv.name || '').trim();
+      // Upgradear nombre cuando el actual es placeholder (vacío o solo dígitos / +números)
+      // y nos llega un pushName real. No tocamos si ya hay un nombre legible.
+      const looksLikePhone = /^\+?\d{6,}$/.test(current);
+      if (!current || looksLikePhone) {
+        conv.name = name;
+      }
     }
     return this.conversations.get(jid);
   }

@@ -77,8 +77,37 @@ export class GHLClient {
 
   async findOrCreateContact({ phone, name }) {
     const existing = await this.findContactByPhone(phone);
-    if (existing) return existing;
+    if (existing) {
+      // Si el contacto existe pero tiene un nombre placeholder (vacío o solo número),
+      // y nosotros tenemos un pushName REAL (no otro número), actualizamos. Evita que
+      // la lista de GHL quede llena de '+593...' cuando el cliente ya tiene display name.
+      const newNameIsReal = name && name.trim() && !/^\+?\d{6,}$/.test(name.trim());
+      if (newNameIsReal && this._isPlaceholderName(existing, phone)) {
+        await this.updateContactName(existing.id, name).catch((e) =>
+          console.warn(`[ghl] update contact name falló: ${e.message}`)
+        );
+        existing.firstName = name;
+      }
+      return existing;
+    }
     return await this.createContact({ phone, name });
+  }
+
+  _isPlaceholderName(contact, phone) {
+    const candidates = [contact?.firstName, contact?.contactName, contact?.name]
+      .filter((v) => typeof v === 'string')
+      .map((v) => v.trim());
+    if (candidates.length === 0) return true;
+    const looksLikePhone = (s) => /^\+?\d{6,}$/.test(s);
+    const phoneDigits = String(phone || '').replace(/\D/g, '');
+    return candidates.every((c) => !c || looksLikePhone(c) || c.includes(phoneDigits));
+  }
+
+  async updateContactName(contactId, name) {
+    if (!contactId || !name) return null;
+    return this._req('PUT', `/contacts/${contactId}`, {
+      json: { firstName: name },
+    });
   }
 
   async sendInboundMessage({ contactId, message, conversationProviderId, altId, attachments, type = 'Custom' }) {

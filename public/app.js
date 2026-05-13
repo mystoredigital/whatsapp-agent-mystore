@@ -449,35 +449,43 @@ async function loadState() {
   renderAiGlobal();
 }
 
-$('modeToggle').addEventListener('change', (e) => state.activeJid && setMode(state.activeJid, e.target.checked ? 'human' : 'ai'));
-$('aiGlobalToggle').addEventListener('change', (e) => setAiEnabled(!e.target.checked));
-$('manualSend').addEventListener('click', sendManual);
-$('manualInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendManual(); });
-$('manualFile').addEventListener('change', (e) => stageFile(e.target.files?.[0] || null));
-$('searchInput').addEventListener('input', (e) => {
+// Null-safe — si el navegador tiene HTML cacheado sin algún elemento nuevo,
+// no rompemos toda la cadena de event listeners por un TypeError.
+function on(id, evt, fn) {
+  const el = $(id);
+  if (el) el.addEventListener(evt, fn);
+  else console.warn(`[app] elemento #${id} no existe — listener no enganchado`);
+}
+
+on('modeToggle', 'change', (e) => state.activeJid && setMode(state.activeJid, e.target.checked ? 'human' : 'ai'));
+on('aiGlobalToggle', 'change', (e) => setAiEnabled(!e.target.checked));
+on('manualSend', 'click', sendManual);
+on('manualInput', 'keydown', (e) => { if (e.key === 'Enter') sendManual(); });
+on('manualFile', 'change', (e) => stageFile(e.target.files?.[0] || null));
+on('searchInput', 'input', (e) => {
   state.searchQuery = e.target.value.trim();
   renderChatList();
 });
-$('btnGroups').addEventListener('click', openGroupsModal);
-$('groupsClose').addEventListener('click', () => $('groupsModal').classList.add('hidden'));
-$('groupsRefresh').addEventListener('click', loadGroups);
-$('groupsSearch').addEventListener('input', (e) => { _groupsFilter = e.target.value.trim(); renderGroups(); });
-$('groupsList').addEventListener('change', async (e) => {
+on('btnGroups', 'click', openGroupsModal);
+on('groupsClose', 'click', () => $('groupsModal').classList.add('hidden'));
+on('groupsRefresh', 'click', loadGroups);
+on('groupsSearch', 'input', (e) => { _groupsFilter = e.target.value.trim(); renderGroups(); });
+on('groupsList', 'change', async (e) => {
   if (e.target.matches('input[type="checkbox"][data-jid]')) {
     const jid = e.target.dataset.jid;
     const ok = await toggleGroup(jid, e.target.checked);
-    if (!ok) e.target.checked = !e.target.checked; // revert
+    if (!ok) e.target.checked = !e.target.checked;
   }
 });
-$('btnPrompt').addEventListener('click', () => {
+on('btnPrompt', 'click', () => {
   $('promptText').value = state.config.systemPrompt;
   $('promptModal').classList.remove('hidden');
 });
-$('promptCancel').addEventListener('click', () => $('promptModal').classList.add('hidden'));
-$('promptSave').addEventListener('click', savePrompt);
-$('tenantSelect').addEventListener('change', (e) => switchTenant(e.target.value));
-$('btnRelink').addEventListener('click', relink);
-$('btnProvisionProvider').addEventListener('click', provisionProvider);
+on('promptCancel', 'click', () => $('promptModal').classList.add('hidden'));
+on('promptSave', 'click', savePrompt);
+on('tenantSelect', 'change', (e) => switchTenant(e.target.value));
+on('btnRelink', 'click', relink);
+on('btnProvisionProvider', 'click', provisionProvider);
 
 socket.emit('subscribe', state.tenantId);
 socket.on('state', (snap) => {
