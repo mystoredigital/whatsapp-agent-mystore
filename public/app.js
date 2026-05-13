@@ -150,9 +150,11 @@ function renderChatList() {
     const li = document.createElement('li');
     if (conv.jid === state.activeJid) li.classList.add('active');
     const last = conv.messages[conv.messages.length - 1];
+    const previewPrefix = conv.isGroup && last?.senderName ? `${last.senderName}: ` : '';
+    const groupBadge = conv.isGroup ? '<span class="group-badge" title="Grupo">👥</span> ' : '';
     li.innerHTML = `
-      <div class="name">${escapeHtml(displayName(conv))}</div>
-      <div class="preview">${last ? escapeHtml((last.text || '').slice(0, 60)) : '(sin mensajes)'}</div>
+      <div class="name">${groupBadge}${escapeHtml(displayName(conv))}</div>
+      <div class="preview">${last ? escapeHtml((previewPrefix + (last.text || '')).slice(0, 60)) : '(sin mensajes)'}</div>
       <div class="meta">
         <span class="mode-badge ${conv.mode}">${conv.mode === 'ai' ? 'IA' : 'HUMANO'}</span>
         <span>${last ? fmtTime(last.ts) : ''}</span>
@@ -186,7 +188,11 @@ function renderMessages() {
   for (const m of conv.messages) {
     const div = document.createElement('div');
     div.className = `bubble ${m.manual ? 'manual' : m.role}`;
-    div.innerHTML = renderBubbleBody(m) + `<span class="time">${fmtTime(m.ts)}</span>`;
+    // En grupos, el remitente va en una línea pequeña arriba del bubble
+    const senderTag = (conv.isGroup && m.role === 'user' && m.senderName)
+      ? `<div class="sender">${escapeHtml(m.senderName)}</div>`
+      : '';
+    div.innerHTML = senderTag + renderBubbleBody(m) + `<span class="time">${fmtTime(m.ts)}</span>`;
     wrap.appendChild(div);
   }
   wrap.scrollTop = wrap.scrollHeight;

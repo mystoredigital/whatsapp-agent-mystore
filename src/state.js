@@ -104,15 +104,29 @@ export class TenantStore extends EventEmitter {
 
   getOrCreateConversation(jid, name) {
     if (!this.conversations.has(jid)) {
+      const isGroup = jid.endsWith('@g.us');
       const fallback = jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0] : null;
       this.conversations.set(jid, {
         jid, name: name || fallback,
-        mode: 'ai', messages: [], updatedAt: Date.now(),
+        isGroup,
+        // Grupos arrancan en modo humano para evitar que la IA conteste a todo en
+        // chats grupales. El operador puede flipear a IA per-grupo si quiere.
+        mode: isGroup ? 'human' : 'ai',
+        messages: [], updatedAt: Date.now(),
       });
     } else if (name && !this.conversations.get(jid).name) {
       this.conversations.get(jid).name = name;
     }
     return this.conversations.get(jid);
+  }
+
+  setGroupName(jid, groupName) {
+    const conv = this.conversations.get(jid);
+    if (!conv) return;
+    if (conv.name !== groupName) {
+      conv.name = groupName;
+      this.persistConversations().catch(() => {});
+    }
   }
 
   addMessage(jid, msg, name) {

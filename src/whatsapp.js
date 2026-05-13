@@ -127,6 +127,7 @@ export class WhatsAppSession {
     this._outboundSeen = new Set();
     this._sentByUs = new Set();
     this._limiter = new RateLimiter();
+    this._groupNameCache = new Map(); // jid → { name, ts }
     this.metrics = {
       sent: 0,
       skippedRateLimit: 0,
@@ -145,6 +146,22 @@ export class WhatsAppSession {
     if (!(key in this.metrics)) return;
     this.metrics[key]++;
     this.store.emit('metrics', { tenantId: this.store.tenantId, metrics: this.getMetrics() });
+  }
+
+  // Devuelve el nombre del grupo (subject). Cachea 1h. Retorna jid si la query falla.
+  async _getGroupName(jid) {
+    const cached = this._groupNameCache.get(jid);
+    if (cached && Date.now() - cached.ts < 60 * 60_000) return cached.name;
+    try {
+      const md = await this.sock.groupMetadata(jid);
+      const name = md?.subject || jid;
+      this._groupNameCache.set(jid, { name, ts: Date.now() });
+      return name;
+    } catch (e) {
+      console.warn(`[wa:${this.store.tenantId}] groupMetadata ${jid} falló:`, e.message);
+      this._groupNameCache.set(jid, { name: jid, ts: Date.now() });
+      return jid;
+    }
   }
 
   _rememberSentByUs(messageId) {
@@ -221,11 +238,18 @@ export class WhatsAppSession {
   async _handleIncoming(msg) {
     if (!msg.message) return;
     const jid = msg.key.remoteJid;
-    if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
+    if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
+    const isGroup = jid.endsWith('@g.us');
 
     const text = extractText(msg.message);
     const earlyMediaCheck = extractMediaInfo(msg.message);
     if (!text.trim() && !earlyMediaCheck) return;
+
+    // En grupos, el nombre de la conversación es el subject del grupo.
+    if (isGroup) {
+      const groupName = await this._getGroupName(jid);
+      this.store.setGroupName(jid, groupName);
+    }
 
     // Mensaje enviado desde otro dispositivo vinculado (p.ej. el celular del operador):
     // lo registramos como reply manual y forzamos modo humano para que la IA no siga respondiendo.
@@ -250,22 +274,29 @@ export class WhatsAppSession {
       const current = this.store.getOrCreateConversation(jid);
       if (current.mode !== 'human') this.store.setMode(jid, 'human');
 
-      // Mirror a GHL para que el operador en GHL vea lo que envió desde el celular.
-      // Resolver phone — en fromMe el remoteJid es el cliente, no el operador.
-      const fromMeResolved = resolvePhoneAndJid(msg);
-      if (fromMeResolved?.phone) {
-        this._pushOperatorToGHL({
-          jid, phone: fromMeResolved.phone, text: fromMeEffective,
-          attachments: fromMeAttachment ? [fromMeAttachment.url] : [],
-        }).catch((e) => console.error(`[ghl:${this.store.tenantId}] push fromMe`, e.message));
+      // Mirror a GHL solo en 1:1 (grupos son local-only).
+      if (!isGroup) {
+        const fromMeResolved = resolvePhoneAndJid(msg);
+        if (fromMeResolved?.phone) {
+          this._pushOperatorToGHL({
+            jid, phone: fromMeResolved.phone, text: fromMeEffective,
+            attachments: fromMeAttachment ? [fromMeAttachment.url] : [],
+          }).catch((e) => console.error(`[ghl:${this.store.tenantId}] push fromMe`, e.message));
+        }
       }
       return;
     }
 
-    // Resolver teléfono real (manejando LID mode)
-    const resolved = resolvePhoneAndJid(msg);
+    // Resolver teléfono real (manejando LID mode) — null para grupos
+    const resolved = isGroup ? null : resolvePhoneAndJid(msg);
 
-    const name = msg.pushName || resolved?.phone || undefined;
+    // En grupos, name de la conv es el subject del grupo (ya seteado arriba),
+    // y los mensajes individuales llevan senderName/senderJid del que escribió.
+    const senderJid = isGroup ? msg.key.participant : null;
+    const senderName = isGroup
+      ? (msg.pushName || (senderJid ? senderJid.split('@')[0] : 'desconocido'))
+      : null;
+    const name = isGroup ? undefined : (msg.pushName || resolved?.phone || undefined);
 
     // Si hay media, descargarla y subirla a R2 antes de registrar el mensaje
     let attachment = null;
@@ -291,12 +322,17 @@ export class WhatsAppSession {
 
     const conv = this.store.addMessage(
       jid,
-      { role: 'user', text: effectiveText, ...(attachment ? { attachment } : {}) },
+      {
+        role: 'user',
+        text: effectiveText,
+        ...(attachment ? { attachment } : {}),
+        ...(isGroup ? { senderName, senderJid } : {}),
+      },
       name
     );
 
-    // Mirror a GHL si el tenant está conectado Y tenemos teléfono real
-    if (resolved?.phone) {
+    // Mirror a GHL si el tenant está conectado Y tenemos teléfono real (NO grupos — local-only)
+    if (!isGroup && resolved?.phone) {
       this._pushInboundToGHL({
         jid, phone: resolved.phone, text: effectiveText, name, altId: msg.key.id,
         attachments: attachment ? [attachment.url] : [],
@@ -304,7 +340,7 @@ export class WhatsAppSession {
         console.error(`[ghl:${this.store.tenantId}] push inbound`, e.message);
         this.store.addMessage(jid, { role: 'system', text: `⚠️ Push GHL falló: ${e.message}` });
       });
-    } else if (this.store.ghl?.accessToken) {
+    } else if (!isGroup && this.store.ghl?.accessToken) {
       console.warn(`[wa:${this.store.tenantId}] jid sin teléfono resoluble: ${jid}`);
     }
 
@@ -487,6 +523,7 @@ export class WhatsAppSession {
     this._rememberSentByUs(sent?.key?.id);
     this.store.addMessage(jid, { role: 'assistant', text, manual: true });
     if (opts.skipGhlMirror) return;
+    if (jid.endsWith('@g.us')) return; // grupos son local-only, no se mirorean a GHL
     // Mensaje originado fuera de GHL (dashboard) → mirroreamos para que aparezca en GHL Conversations
     const phone = jidToPhone(jid);
     if (phone) {
@@ -518,6 +555,7 @@ export class WhatsAppSession {
       attachment: { url, mimetype: finalMime, type: waType, ...(fileName ? { fileName } : {}), ...(ptt ? { ptt: true } : {}) },
     });
     if (opts.skipGhlMirror) return;
+    if (jid.endsWith('@g.us')) return; // grupos local-only
     const phone = jidToPhone(jid);
     if (phone) {
       this._pushOperatorToGHL({ jid, phone, text: caption || '', attachments: [url] }).catch((e) =>

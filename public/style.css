@@ -133,6 +133,9 @@ body.embed .topbar { padding:8px 16px; }
 .bubble .doc-link::before { content: '📎 '; }
 .bubble .caption { margin-top: 6px; }
 .bubble .transcription { margin-top: 6px; font-size: 12px; font-style: italic; opacity: 0.85; line-height: 1.4; }
+.bubble .sender { font-size: 11px; font-weight: 600; color: #1d9bf0; margin-bottom: 4px; }
+
+.group-badge { display:inline-block;font-size:11px;margin-right:4px;opacity:0.8; }
 
 .attach-btn { display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;background:#243240;color:#8899a6;border:1px solid #2f4150;border-radius:6px;cursor:pointer;font-size:18px;line-height:1; }
 .attach-btn:hover { background:#2d3e4f;color:#e7e9ea; }
