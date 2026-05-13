@@ -396,7 +396,6 @@ export function startServer(port = 3000) {
         let tenant = tenants.get(tenantId);
         if (!tenant) tenant = await tenants.create(tenantId, { kind: 'ghl', companyId: tokens.companyId });
         tenant.setGhlTokens(tokens);
-        await ensureConversationProvider(tenant);
         console.log(`[oauth] tenant ${tenantId} instalado (company=${tokens.companyId})`);
         return res.send(successPage({ tenantId, companyId: tokens.companyId }));
       }
@@ -450,7 +449,6 @@ export function startServer(port = 3000) {
       let tenant = tenants.get(locationId);
       if (!tenant) tenant = await tenants.create(locationId, { kind: 'ghl', companyId });
       tenant.setGhlTokens(locTokens);
-      await ensureConversationProvider(tenant);
       console.log(`[oauth] tenant ${locationId} conectado desde agencia ${companyId}`);
 
       res.send(successPage({ tenantId: locationId, companyId }));

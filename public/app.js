@@ -79,8 +79,9 @@ function renderTenantBar() {
     sel.appendChild(opt);
   }
   $('ghlBadge').textContent = state.ghl ? `🔗 GHL: ${state.ghl.locationId.slice(0, 8)}…` : '';
-  const needsProvider = !!(state.ghl && !state.ghl.conversationProviderId);
-  $('btnProvisionProvider').classList.toggle('hidden', !needsProvider);
+  // El botón de provisión vía API no funciona — GHL gestiona los Custom Providers
+  // solo desde el Marketplace UI del developer. Lo mantenemos oculto.
+  $('btnProvisionProvider').classList.add('hidden');
   renderMetrics();
 }
 
