@@ -25,22 +25,29 @@ export class TenantStore extends EventEmitter {
     super();
     this.tenantId = tenantId;
     this.dir = path.join(DATA_ROOT, tenantId);
-    this.authDir = path.join(this.dir, 'auth_baileys');
+    this.authDir = path.join(this.dir, 'auth_baileys'); // legacy default
     this.convFile = path.join(this.dir, 'conversations.json');
     this.configFile = path.join(this.dir, 'config.json');
     this.metaFile = path.join(this.dir, 'meta.json');
     this.tokensFile = path.join(this.dir, 'tokens.json');
     this.contactsFile = path.join(this.dir, 'contacts.json');
+    this.numbersFile = path.join(this.dir, 'numbers.json');
+    this.numbersAuthRoot = path.join(this.dir, 'auth'); // para nuevos numberId
 
     this.conversations = new Map();
     // enabledGroups: lista explícita de JIDs @g.us que el operador habilitó.
     // Por defecto vacío → ningún grupo aparece (opt-in para evitar bandeja saturada).
     this.config = { systemPrompt: DEFAULT_PROMPT, aiEnabled: true, enabledGroups: [] };
-    this.connection = { state: 'disconnected', qr: null };
+    this.connection = { state: 'disconnected', qr: null }; // aggregate (default number) para retro-compat
     this.meta = { tenantId, kind: meta.kind || 'local', ...meta };
     this.ghl = null;
-    this.jidByContactId = new Map(); // contactId GHL → jid WhatsApp
+    this.jidByContactId = new Map();
     this.contactIdByJid = new Map();
+
+    // Multi-número: cada entry es { id, label, authDir, connection: { state, qr } }
+    this.numbers = new Map();
+    // Routing outbound: jid → numberId del último mensaje recibido en/enviado por ese chat
+    this.lastNumberByJid = new Map();
   }
 
   async load() {
@@ -73,6 +80,45 @@ export class TenantStore extends EventEmitter {
         this.contactIdByJid.set(jid, contactId);
       }
     } catch {}
+
+    // numbers.json: lista de números WhatsApp del tenant. Migración legacy:
+    // si no existe pero hay `auth_baileys/` con creds, lo registramos como 'default'.
+    try {
+      const raw = await fs.readFile(this.numbersFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      for (const n of (parsed.list || [])) {
+        this.numbers.set(n.id, {
+          id: n.id,
+          label: n.label || n.id,
+          authDir: path.isAbsolute(n.authDir) ? n.authDir : path.join(this.dir, n.authDir),
+          authDirRel: n.authDir, // guardamos relativo para reserializar idéntico
+          connection: { state: 'disconnected', qr: null },
+        });
+      }
+      const lastByJid = parsed.lastNumberByJid || {};
+      for (const [jid, nid] of Object.entries(lastByJid)) this.lastNumberByJid.set(jid, nid);
+    } catch {
+      if (fsSync.existsSync(this.authDir)) {
+        // Tenant legacy con un único número → migrar automáticamente a 'default'
+        this.numbers.set('default', {
+          id: 'default', label: 'Principal',
+          authDir: this.authDir, authDirRel: 'auth_baileys',
+          connection: { state: 'disconnected', qr: null },
+        });
+        await this.persistNumbers().catch(() => {});
+      }
+    }
+  }
+
+  async persistNumbers() {
+    const list = Array.from(this.numbers.values()).map((n) => ({
+      id: n.id, label: n.label, authDir: n.authDirRel,
+    }));
+    const data = {
+      list,
+      lastNumberByJid: Object.fromEntries(this.lastNumberByJid),
+    };
+    await fs.writeFile(this.numbersFile, JSON.stringify(data, null, 2));
   }
 
   linkContact(contactId, jid) {
@@ -181,9 +227,77 @@ export class TenantStore extends EventEmitter {
     this.emit('config', { tenantId: this.tenantId, config: this.config });
   }
 
+  // LEGACY: actualiza `this.connection` (aggregate) sin numberId. Se mantiene por
+  // si algún path antiguo lo llama; preferir setNumberConnection.
   setConnection(state, qr = null) {
     this.connection = { state, qr };
     this.emit('connection', { tenantId: this.tenantId, connection: this.connection });
+  }
+
+  // Actualiza el estado de conexión de un número específico. Si es el número default
+  // también espeja el resultado en `this.connection` (compat con dashboard legacy).
+  setNumberConnection(numberId, state, qr = null) {
+    const n = this.numbers.get(numberId);
+    if (n) n.connection = { state, qr };
+    const defaultId = this.getDefaultNumberId();
+    if (numberId === defaultId) this.connection = { state, qr };
+    this.emit('connection', {
+      tenantId: this.tenantId, numberId,
+      connection: { state, qr },
+      // aggregate para clientes legacy:
+      aggregate: this.connection,
+    });
+  }
+
+  getDefaultNumberId() {
+    return this.numbers.size ? this.numbers.keys().next().value : null;
+  }
+
+  listNumbers() {
+    return Array.from(this.numbers.values()).map((n) => ({
+      id: n.id, label: n.label,
+      connection: n.connection,
+    }));
+  }
+
+  addNumber({ id, label }) {
+    if (this.numbers.has(id)) throw new Error(`Número '${id}' ya existe`);
+    const authDirRel = path.join('auth', id);
+    const authDir = path.join(this.dir, authDirRel);
+    const entry = {
+      id, label: label || id, authDir, authDirRel,
+      connection: { state: 'disconnected', qr: null },
+    };
+    this.numbers.set(id, entry);
+    this.persistNumbers().catch(() => {});
+    return entry;
+  }
+
+  async removeNumber(id) {
+    const n = this.numbers.get(id);
+    if (!n) return;
+    this.numbers.delete(id);
+    // Limpiar lastNumberByJid de entries que apuntan a este número
+    for (const [jid, nid] of this.lastNumberByJid.entries()) {
+      if (nid === id) this.lastNumberByJid.delete(jid);
+    }
+    await this.persistNumbers().catch(() => {});
+    // Borrar el authDir si está dentro del tenant (defensive — no tocar absolutos extraños)
+    if (n.authDir && n.authDir.startsWith(this.dir)) {
+      await fs.rm(n.authDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  noteNumberForJid(jid, numberId) {
+    if (!jid || !numberId) return;
+    const current = this.lastNumberByJid.get(jid);
+    if (current === numberId) return;
+    this.lastNumberByJid.set(jid, numberId);
+    this.persistNumbers().catch(() => {});
+  }
+
+  getNumberForJid(jid) {
+    return this.lastNumberByJid.get(jid) || this.getDefaultNumberId();
   }
 
   setGhlTokens(tokens) {
@@ -197,7 +311,8 @@ export class TenantStore extends EventEmitter {
       meta: this.meta,
       conversations: Array.from(this.conversations.values()).sort((a, b) => b.updatedAt - a.updatedAt),
       config: this.config,
-      connection: this.connection,
+      connection: this.connection, // aggregate (default number) — retro-compat
+      numbers: this.listNumbers(),
       ghl: this.ghl ? {
         locationId: this.ghl.locationId,
         companyId: this.ghl.companyId,

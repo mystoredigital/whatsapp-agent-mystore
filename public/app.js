@@ -10,6 +10,7 @@ const state = {
   conversations: [],
   config: { systemPrompt: '', aiEnabled: true },
   connection: { state: 'disconnected', qr: null },
+  numbers: [], // [{ id, label, connection: { state, qr } }, ...]
   meta: null,
   ghl: null,
   metrics: null,
@@ -30,21 +31,47 @@ function fmtTime(ts) {
 
 function renderConnection() {
   const el = $('connStatus');
-  el.className = `status ${state.connection.state}`;
+  const numbers = state.numbers || [];
+  // Estado agregado: 'connected' si TODOS conectados, 'qr' si alguno necesita QR,
+  // si no, usa el estado del default. Para tenants single-number el resultado es el mismo.
+  let aggregateState = state.connection.state || 'disconnected';
+  let qrSrc = null, qrLabel = null;
+  if (numbers.length > 0) {
+    const qrNumber = numbers.find((n) => n.connection?.state === 'qr');
+    if (qrNumber) {
+      aggregateState = 'qr';
+      qrSrc = qrNumber.connection.qr;
+      qrLabel = qrNumber.label;
+    } else {
+      const allConnected = numbers.every((n) => n.connection?.state === 'connected');
+      aggregateState = allConnected ? 'connected' : (numbers.find((n) => n.connection?.state === 'connected') ? 'mixed' : numbers[0].connection?.state || 'disconnected');
+    }
+  }
+  el.className = `status ${aggregateState}`;
   const labels = {
     connected: '● Conectado',
     qr: '● Escanea el QR',
     disconnected: '● Desconectado',
     logged_out: '● Sesión cerrada',
     error: '● Error',
+    mixed: '● Algunos conectados',
   };
-  el.textContent = labels[state.connection.state] || state.connection.state;
+  el.textContent = numbers.length > 1
+    ? `${labels[aggregateState] || aggregateState} (${numbers.length} números)`
+    : (labels[aggregateState] || aggregateState);
 
-  // Botón re-link: solo visible cuando hay que regenerar QR (logged_out)
-  $('btnRelink').classList.toggle('hidden', state.connection.state !== 'logged_out');
+  // Botón re-link: visible cuando algún número está logged_out
+  const anyLoggedOut = numbers.some((n) => n.connection?.state === 'logged_out') || state.connection.state === 'logged_out';
+  $('btnRelink').classList.toggle('hidden', !anyLoggedOut);
 
   const modal = $('qrModal');
-  if (state.connection.state === 'qr' && state.connection.qr) {
+  // Muestra QR del primer número en estado 'qr' (o el legacy state.connection.qr)
+  if (qrSrc) {
+    $('qrImg').src = qrSrc;
+    const titleEl = modal.querySelector('h3');
+    if (titleEl) titleEl.textContent = qrLabel ? `Escanea para vincular: ${qrLabel}` : 'Escanea para vincular WhatsApp';
+    modal.classList.remove('hidden');
+  } else if (state.connection.state === 'qr' && state.connection.qr) {
     $('qrImg').src = state.connection.qr;
     modal.classList.remove('hidden');
   } else {
@@ -198,6 +225,97 @@ function renderGroups() {
       </label>
     </div>`;
   }).join('');
+}
+
+async function openNumbersModal() {
+  $('numbersModal').classList.remove('hidden');
+  await loadNumbers();
+}
+
+async function loadNumbers() {
+  const list = $('numbersList');
+  list.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const r = await fetch(withTenant('/api/numbers'));
+    const data = await r.json();
+    if (!r.ok) {
+      list.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || r.status)}</div>`;
+      return;
+    }
+    state.numbers = data.numbers || [];
+    renderNumbersList();
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderNumbersList() {
+  const list = $('numbersList');
+  if (!state.numbers.length) {
+    list.innerHTML = '<div class="empty">Aún no hay números. Añade uno abajo.</div>';
+    return;
+  }
+  list.innerHTML = state.numbers.map((n) => {
+    const st = n.connection?.state || 'disconnected';
+    const stLabels = { connected: 'conectado', qr: 'escanea QR', disconnected: 'desconectado', logged_out: 'sesión cerrada' };
+    const qrHtml = st === 'qr' && n.connection?.qr
+      ? `<div class="qr-block"><img src="${escapeHtml(n.connection.qr)}" alt="QR"></div>`
+      : '';
+    const isOnlyOne = state.numbers.length === 1;
+    return `<div class="number-row" data-numberid="${escapeHtml(n.id)}">
+      <div class="info">
+        <div class="label">${escapeHtml(n.label || n.id)}</div>
+        <div class="id">${escapeHtml(n.id)}</div>
+      </div>
+      <span class="state ${st}">${stLabels[st] || st}</span>
+      <div class="actions">
+        <button class="btn" data-action="relink" data-numberid="${escapeHtml(n.id)}">Re-link QR</button>
+        ${isOnlyOne ? '' : `<button class="btn" data-action="remove" data-numberid="${escapeHtml(n.id)}">Eliminar</button>`}
+      </div>
+      ${qrHtml}
+    </div>`;
+  }).join('');
+}
+
+async function addNumber() {
+  const id = $('newNumberId').value.trim();
+  const label = $('newNumberLabel').value.trim();
+  if (!id) { alert('id requerido'); return; }
+  const btn = $('numbersAdd');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/numbers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant: state.tenantId, id, label: label || id }),
+    });
+    const data = await r.json();
+    if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+    $('newNumberId').value = '';
+    $('newNumberLabel').value = '';
+    await loadNumbers();
+  } finally { btn.disabled = false; }
+}
+
+async function relinkNumber(numberId) {
+  if (!confirm(`Re-link el número '${numberId}'? Esto cierra la sesión actual y genera un QR nuevo.`)) return;
+  await fetch('/api/relink', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tenant: state.tenantId, numberId }),
+  });
+  // El estado se actualizará via socket; refrescamos la lista por si acaso
+  setTimeout(loadNumbers, 1500);
+}
+
+async function removeNumber(numberId) {
+  if (!confirm(`Eliminar el número '${numberId}'? Se borrarán las credenciales y la sesión se cierra. Esto NO borra las conversaciones.`)) return;
+  const r = await fetch(`/api/numbers/${encodeURIComponent(numberId)}?tenant=${encodeURIComponent(state.tenantId)}`, {
+    method: 'DELETE',
+  });
+  const data = await r.json();
+  if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+  await loadNumbers();
 }
 
 async function toggleGroup(jid, enabled) {
@@ -439,6 +557,7 @@ async function loadState() {
   state.conversations = snap.conversations;
   state.config = snap.config;
   state.connection = snap.connection;
+  state.numbers = snap.numbers || [];
   state.meta = snap.meta;
   state.ghl = snap.ghl;
   state.metrics = snap.metrics || null;
@@ -466,6 +585,17 @@ on('searchInput', 'input', (e) => {
   state.searchQuery = e.target.value.trim();
   renderChatList();
 });
+on('btnNumbers', 'click', openNumbersModal);
+on('numbersClose', 'click', () => $('numbersModal').classList.add('hidden'));
+on('numbersAdd', 'click', addNumber);
+on('numbersList', 'click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const id = btn.dataset.numberid;
+  if (action === 'relink') await relinkNumber(id);
+  else if (action === 'remove') await removeNumber(id);
+});
 on('btnGroups', 'click', openGroupsModal);
 on('groupsClose', 'click', () => $('groupsModal').classList.add('hidden'));
 on('groupsRefresh', 'click', loadGroups);
@@ -492,6 +622,7 @@ socket.on('state', (snap) => {
   state.conversations = snap.conversations;
   state.config = snap.config;
   state.connection = snap.connection;
+  state.numbers = snap.numbers || [];
   state.meta = snap.meta;
   state.ghl = snap.ghl;
   state.metrics = snap.metrics || null;
@@ -501,7 +632,20 @@ socket.on('state', (snap) => {
   renderMessages();
   renderAiGlobal();
 });
-socket.on('connection', ({ connection }) => { state.connection = connection; renderConnection(); });
+socket.on('connection', (payload) => {
+  // Multi-número: el evento ahora viene como { numberId, connection, aggregate }
+  if (payload.numberId) {
+    const idx = state.numbers.findIndex((n) => n.id === payload.numberId);
+    if (idx >= 0) state.numbers[idx] = { ...state.numbers[idx], connection: payload.connection };
+    if (payload.aggregate) state.connection = payload.aggregate;
+    // Si el modal Números está abierto, re-renderiza para mostrar el cambio
+    if (!$('numbersModal').classList.contains('hidden')) renderNumbersList();
+  } else if (payload.connection) {
+    // Retro-compat: evento legacy sin numberId
+    state.connection = payload.connection;
+  }
+  renderConnection();
+});
 socket.on('metrics', ({ metrics }) => { state.metrics = metrics; renderMetrics(); });
 socket.on('config', ({ config }) => { state.config = config; renderAiGlobal(); renderChatList(); });
 socket.on('mode', ({ jid, mode }) => {

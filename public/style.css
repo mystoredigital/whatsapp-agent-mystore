@@ -189,6 +189,28 @@ body.embed .topbar { padding:8px 16px; }
 .switch input:checked + .slider { background:#1d9bf0; }
 .switch input:checked + .slider::before { transform: translateX(16px); }
 
+.numbers-list { max-height: 50vh; overflow-y: auto; border: 1px solid #2a3744; border-radius: 6px; margin-bottom: 16px; }
+.numbers-list .empty { text-align:center;color:#5b6b7a;padding:24px;font-size:13px; }
+.number-row { display:flex;align-items:center;gap:12px;padding:12px;border-bottom:1px solid #1c2630;flex-wrap:wrap; }
+.number-row:last-child { border-bottom:0; }
+.number-row .info { flex:1;min-width:200px; }
+.number-row .label { font-weight:500;font-size:14px; }
+.number-row .id { font-size:11px;color:#5b6b7a;font-family:ui-monospace,Menlo,monospace; }
+.number-row .state { font-size:12px;padding:2px 8px;border-radius:10px; }
+.number-row .state.connected { background:#1a4d2a;color:#4caf50; }
+.number-row .state.qr { background:#5a4a14;color:#ffb300; }
+.number-row .state.disconnected, .number-row .state.logged_out { background:#5a1a1a;color:#f44336; }
+.number-row .actions { display:flex;gap:6px; }
+.number-row .actions button { font-size:12px;padding:4px 10px; }
+.number-row .qr-block { flex-basis:100%;display:flex;justify-content:center;padding:12px;background:#0f1419;border-radius:6px;margin-top:4px; }
+.number-row .qr-block img { width:240px;height:240px; }
+
+.add-number { padding:12px;background:#0f1419;border:1px solid #2a3744;border-radius:6px; }
+.add-number h4 { margin:0 0 8px;font-size:13px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px; }
+.add-number .row { display:flex;gap:8px; }
+.add-number input { flex:1;background:#16202a;color:#e7e9ea;border:1px solid #2a3744;border-radius:6px;padding:6px 10px;font-size:13px; }
+.add-number input:focus { outline:none;border-color:#1d9bf0; }
+
 .attach-btn { display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;background:#243240;color:#8899a6;border:1px solid #2f4150;border-radius:6px;cursor:pointer;font-size:18px;line-height:1; }
 .attach-btn:hover { background:#2d3e4f;color:#e7e9ea; }
 .attach-btn.disabled { opacity:0.4;cursor:not-allowed; }

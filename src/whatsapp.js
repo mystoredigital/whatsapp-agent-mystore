@@ -142,15 +142,19 @@ function extractMediaInfo(rawMessage) {
 }
 
 export class WhatsAppSession {
-  constructor(store) {
+  constructor(store, { numberId = 'default', label = 'Principal', authDir = null } = {}) {
     this.store = store;
+    this.numberId = numberId;
+    this.label = label;
+    // authDir explícito (multi-número) — si no se pasa, fallback al legacy
+    this.authDir = authDir || store.authDir;
     this.sock = null;
     this._reconnectTimer = null;
     this._reconnectAttempt = 0;
     this._outboundSeen = new Set();
     this._sentByUs = new Set();
     this._limiter = new RateLimiter();
-    this._groupNameCache = new Map(); // jid → { name, ts }
+    this._groupNameCache = new Map();
     this.metrics = {
       sent: 0,
       skippedRateLimit: 0,
@@ -161,6 +165,11 @@ export class WhatsAppSession {
     };
   }
 
+  // Prefijo de logs para distinguir números dentro de un mismo tenant
+  get _tag() {
+    return `${this.store.tenantId}/${this.numberId}`;
+  }
+
   getMetrics() {
     return { ...this.metrics };
   }
@@ -168,7 +177,7 @@ export class WhatsAppSession {
   _bump(key) {
     if (!(key in this.metrics)) return;
     this.metrics[key]++;
-    this.store.emit('metrics', { tenantId: this.store.tenantId, metrics: this.getMetrics() });
+    this.store.emit('metrics', { tenantId: this.store.tenantId, numberId: this.numberId, metrics: this.getMetrics() });
   }
 
   // Devuelve el nombre del grupo (subject). Cachea 1h. Retorna jid si la query falla.
@@ -205,7 +214,7 @@ export class WhatsAppSession {
   }
 
   async start() {
-    const { state, saveCreds } = await useMultiFileAuthState(this.store.authDir);
+    const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
 
     this.sock = makeWASocket({
@@ -222,26 +231,26 @@ export class WhatsAppSession {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
         const dataUrl = await qrcode.toDataURL(qr);
-        this.store.setConnection('qr', dataUrl);
+        this.store.setNumberConnection(this.numberId, 'qr', dataUrl);
       }
       if (connection === 'open') {
         this._reconnectAttempt = 0;
-        this.store.setConnection('connected');
-        console.log(`[wa:${this.store.tenantId}] conectado`);
+        this.store.setNumberConnection(this.numberId, 'connected');
+        console.log(`[wa:${this._tag}] conectado`);
       }
       if (connection === 'close') {
         const code = new Boom(lastDisconnect?.error).output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
-        this.store.setConnection(loggedOut ? 'logged_out' : 'disconnected');
+        this.store.setNumberConnection(this.numberId, loggedOut ? 'logged_out' : 'disconnected');
         if (!loggedOut) {
           const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** this._reconnectAttempt);
           this._reconnectAttempt = Math.min(this._reconnectAttempt + 1, 10);
-          console.log(`[wa:${this.store.tenantId}] cerrado code=${code} reconnect en ${delay}ms`);
+          console.log(`[wa:${this._tag}] cerrado code=${code} reconnect en ${delay}ms`);
           clearTimeout(this._reconnectTimer);
           this._reconnectTimer = setTimeout(() => this.start().catch(console.error), delay);
           this._bump('reconnects');
         } else {
-          console.log(`[wa:${this.store.tenantId}] cerrado code=${code} (loggedOut, no reconnect)`);
+          console.log(`[wa:${this._tag}] cerrado code=${code} (loggedOut, no reconnect)`);
         }
       }
     });
@@ -295,10 +304,11 @@ export class WhatsAppSession {
       const fromMeEffective = text.trim() || fromMeAttachment?.transcription || '';
       const fromMeQuoted = extractQuotedInfo(msg.message);
       this.store.addMessage(jid, {
-        role: 'assistant', manual: true, text: fromMeEffective,
+        role: 'assistant', manual: true, text: fromMeEffective, numberId: this.numberId,
         ...(fromMeAttachment ? { attachment: fromMeAttachment } : {}),
         ...(fromMeQuoted ? { quoted: fromMeQuoted } : {}),
       });
+      this.store.noteNumberForJid(jid, this.numberId);
       const current = this.store.getOrCreateConversation(jid);
       if (current.mode !== 'human') this.store.setMode(jid, 'human');
 
@@ -356,12 +366,14 @@ export class WhatsAppSession {
       {
         role: 'user',
         text: effectiveText,
+        numberId: this.numberId,
         ...(attachment ? { attachment } : {}),
         ...(isGroup ? { senderName, senderJid } : {}),
         ...(quoted ? { quoted } : {}),
       },
       name
     );
+    this.store.noteNumberForJid(jid, this.numberId);
 
     // Mirror a GHL si el tenant está conectado Y tenemos teléfono real (NO grupos — local-only)
     if (!isGroup && resolved?.phone) {
@@ -429,7 +441,8 @@ export class WhatsAppSession {
         this._rememberSentByUs(sent?.key?.id);
         this._limiter.record(jid);
         this._bump('sent');
-        this.store.addMessage(jid, { role: 'assistant', text: reply });
+        this.store.addMessage(jid, { role: 'assistant', text: reply, numberId: this.numberId });
+        this.store.noteNumberForJid(jid, this.numberId);
         // Mirror la respuesta de IA a GHL como inbound del lado business
         if (resolved?.phone) {
           this._pushAIReplyToGHL({ jid, phone: resolved.phone, text: reply }).catch((e) => {
@@ -553,14 +566,15 @@ export class WhatsAppSession {
     if (!this.sock) throw new Error('WhatsApp no conectado');
     const sent = await this.sock.sendMessage(jid, { text });
     this._rememberSentByUs(sent?.key?.id);
-    this.store.addMessage(jid, { role: 'assistant', text, manual: true });
+    this.store.addMessage(jid, { role: 'assistant', text, manual: true, numberId: this.numberId });
+    this.store.noteNumberForJid(jid, this.numberId);
     if (opts.skipGhlMirror) return;
     if (jid.endsWith('@g.us')) return; // grupos son local-only, no se mirorean a GHL
     // Mensaje originado fuera de GHL (dashboard) → mirroreamos para que aparezca en GHL Conversations
     const phone = jidToPhone(jid);
     if (phone) {
       this._pushOperatorToGHL({ jid, phone, text }).catch((e) =>
-        console.error(`[ghl:${this.store.tenantId}] push manual`, e.message)
+        console.error(`[ghl:${this._tag}] push manual`, e.message)
       );
     }
   }
@@ -582,16 +596,17 @@ export class WhatsAppSession {
     const sent = await this.sock.sendMessage(jid, payload);
     this._rememberSentByUs(sent?.key?.id);
     this.store.addMessage(jid, {
-      role: 'assistant', manual: true,
+      role: 'assistant', manual: true, numberId: this.numberId,
       text: caption || '',
       attachment: { url, mimetype: finalMime, type: waType, ...(fileName ? { fileName } : {}), ...(ptt ? { ptt: true } : {}) },
     });
+    this.store.noteNumberForJid(jid, this.numberId);
     if (opts.skipGhlMirror) return;
     if (jid.endsWith('@g.us')) return; // grupos local-only
     const phone = jidToPhone(jid);
     if (phone) {
       this._pushOperatorToGHL({ jid, phone, text: caption || '', attachments: [url] }).catch((e) =>
-        console.error(`[ghl:${this.store.tenantId}] push manual media`, e.message)
+        console.error(`[ghl:${this._tag}] push manual media`, e.message)
       );
     }
   }
@@ -605,9 +620,19 @@ export class WhatsAppSession {
     try { await this.sock?.logout(); } catch {}
     try { this.sock?.end(); } catch {}
     this.sock = null;
-    await fs.rm(this.store.authDir, { recursive: true, force: true });
-    this.store.setConnection('disconnected');
-    console.log(`[wa:${this.store.tenantId}] relink: authDir borrado, reiniciando…`);
+    await fs.rm(this.authDir, { recursive: true, force: true });
+    this.store.setNumberConnection(this.numberId, 'disconnected');
+    console.log(`[wa:${this._tag}] relink: authDir borrado, reiniciando…`);
     return this.start();
+  }
+
+  // Cierra el sock sin borrar creds. Útil al eliminar el número (lógica en registry).
+  async stop() {
+    clearTimeout(this._reconnectTimer);
+    this._reconnectAttempt = 0;
+    try { await this.sock?.logout(); } catch {}
+    try { this.sock?.end(); } catch {}
+    this.sock = null;
+    this.store.setNumberConnection(this.numberId, 'disconnected');
   }
 }

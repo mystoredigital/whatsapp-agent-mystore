@@ -433,21 +433,53 @@ export function startServer(port = 3000) {
   app.post('/api/relink', async (req, res) => {
     try {
       const t = getTenant(req);
-      const session = tenants.session(t.tenantId);
+      const numberId = req.body?.numberId || req.query?.numberId;
+      const session = tenants.session(t.tenantId, numberId);
       if (!session) return res.status(404).json({ error: 'session no existe' });
-      session.relink().catch((e) => console.error(`[relink ${t.tenantId}]`, e.message));
-      res.json({ ok: true });
+      session.relink().catch((e) => console.error(`[relink ${t.tenantId}/${session.numberId}]`, e.message));
+      res.json({ ok: true, numberId: session.numberId });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  // --- Multi-número ---
+  app.get('/api/numbers', (req, res) => {
+    try {
+      const t = getTenant(req);
+      res.json({ numbers: t.listNumbers(), defaultId: t.getDefaultNumberId() });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  app.post('/api/numbers', async (req, res) => {
+    try {
+      const t = getTenant(req);
+      const { id, label } = req.body || {};
+      if (!id) return res.status(400).json({ error: 'id requerido (slug del número)' });
+      const entry = await tenants.addNumber(t.tenantId, { id, label });
+      res.json({ ok: true, number: { id: entry.id, label: entry.label, connection: entry.connection } });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/numbers/:id', async (req, res) => {
+    try {
+      const t = getTenant(req);
+      const id = req.params.id;
+      if (!t.numbers.has(id)) return res.status(404).json({ error: 'número no existe' });
+      await tenants.removeNumber(t.tenantId, id);
+      res.json({ ok: true, removed: id });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
   app.post('/api/send', async (req, res) => {
     try {
       const t = getTenant(req);
-      const { jid, text } = req.body || {};
+      const { jid, text, numberId } = req.body || {};
       if (!jid || !text) return res.status(400).json({ error: 'jid y text requeridos' });
-      const session = tenants.session(t.tenantId);
+      const session = numberId
+        ? tenants.session(t.tenantId, numberId)
+        : tenants.sessionForJid(t.tenantId, jid);
+      if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
       await session.send(jid, text);
-      res.json({ ok: true });
+      res.json({ ok: true, numberId: session.numberId });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
@@ -476,9 +508,13 @@ export function startServer(port = 3000) {
         prefix: `wa/${t.tenantId}/manual`,
       });
 
-      const session = tenants.session(t.tenantId);
+      const numberId = parts.fields.numberId;
+      const session = numberId
+        ? tenants.session(t.tenantId, numberId)
+        : tenants.sessionForJid(t.tenantId, jid);
+      if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
       await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName: file.filename, caption });
-      res.json({ ok: true, url: uploaded.url });
+      res.json({ ok: true, url: uploaded.url, numberId: session.numberId });
     } catch (e) {
       console.error('[send-media]', e);
       res.status(e.status || 500).json({ error: e.message });
@@ -632,14 +668,17 @@ export function startServer(port = 3000) {
     if (!message && !hasMedia) return;
     const tenant = tenants.get(locationId);
     if (!tenant) return console.warn(`[webhook outbound] tenant ${locationId} no existe`);
-    const session = tenants.session(locationId);
-    if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
 
     // 1) intentar resolver JID via contactId (correcto incluso con LID)
     let jid = contactId ? tenant.getJidByContactId(contactId) : null;
     // 2) fallback: convertir phone → JID estándar (solo válido si no es LID)
     if (!jid && phone) jid = phoneToJid(phone);
     if (!jid) return console.warn(`[webhook outbound] no se pudo resolver jid: contactId=${contactId} phone=${phone}`);
+
+    // Routing multi-número: usa el número que último interactuó con este contacto.
+    const session = tenants.sessionForJid(locationId, jid);
+    if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
+    console.log(`[webhook outbound] enviando vía número '${session.numberId}'`);
 
     session.markOutboundSent(messageId);
 

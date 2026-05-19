@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260513e" />
+<link rel="stylesheet" href="/style.css?v=20260513f" />
 </head>
 <body>
 <header class="topbar">
@@ -24,6 +24,7 @@
     <input type="checkbox" id="aiGlobalToggle" />
     <span id="aiGlobalLabel">Modo humano global</span>
   </label>
+  <button id="btnNumbers" class="btn" title="Gestionar números de WhatsApp del tenant">Números</button>
   <button id="btnGroups" class="btn" title="Elegir qué grupos ver en la bandeja">Grupos</button>
   <button id="btnPrompt" class="btn">Editar prompt</button>
 </header>
@@ -65,6 +66,28 @@
   </div>
 </div>
 
+<div id="numbersModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>Números de WhatsApp</h3>
+    <p style="color:#8899a6;font-size:13px;margin-top:0">Cada número es una sesión Baileys independiente. El primer mensaje recibido o enviado fija qué número usar para responder a cada contacto.</p>
+    <div id="numbersList" class="numbers-list">
+      <div class="empty">Cargando…</div>
+    </div>
+    <div class="add-number">
+      <h4>Añadir número</h4>
+      <div class="row">
+        <input type="text" id="newNumberId" placeholder="id (ej: ventas)" maxlength="32" />
+        <input type="text" id="newNumberLabel" placeholder="Etiqueta visible" />
+        <button id="numbersAdd" class="btn primary">Crear</button>
+      </div>
+      <div style="font-size:11px;color:#5b6b7a;margin-top:4px">El id se usa internamente (slug). La etiqueta es lo que verás en el dashboard.</div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="numbersClose" class="btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="groupsModal" class="modal hidden">
   <div class="modal-body large">
     <h3>Grupos de WhatsApp</h3>
@@ -92,6 +115,6 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app.js?v=20260513e"></script>
+<script src="/app.js?v=20260513f"></script>
 </body>
 </html>
