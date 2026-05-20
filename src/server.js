@@ -803,6 +803,68 @@ export function startServer(port = 3000) {
 
   app.get('/api/debug/ghl-webhooks', (_req, res) => res.json({ events: _ghlWebhookLog }));
 
+  // Inspector de metadata GHL por conv: muestra ghlConversationId, cuántos mensajes
+  // tienen ghlMessageId, y el último msgId. Útil para confirmar que la captura
+  // post-_pushInboundToGHL está funcionando antes de probar el markRead.
+  app.get('/api/debug/conv-meta', (req, res) => {
+    try {
+      const t = getTenant(req);
+      const jid = req.query.jid;
+      if (!jid) {
+        // Sin jid: lista todas las convs con metadata resumida
+        const all = [];
+        for (const c of t.conversations.values()) {
+          const withId = c.messages.filter((m) => m.ghlMessageId).length;
+          all.push({
+            jid: c.jid, name: c.name, unreadCount: c.unreadCount || 0,
+            ghlConversationId: c.ghlConversationId || null,
+            messagesWithGhlId: withId,
+            totalMessages: c.messages.length,
+          });
+        }
+        return res.json({ convs: all });
+      }
+      const conv = t.conversations.get(jid);
+      if (!conv) return res.status(404).json({ error: 'conv no existe' });
+      res.json({
+        jid: conv.jid, name: conv.name, unreadCount: conv.unreadCount || 0,
+        ghlConversationId: conv.ghlConversationId || null,
+        messages: conv.messages.slice(-20).map((m) => ({
+          id: m.id, role: m.role, ts: m.ts, readAt: m.readAt,
+          ghlMessageId: m.ghlMessageId || null,
+          ghlConversationId: m.ghlConversationId || null,
+          text: (m.text || '').slice(0, 50),
+        })),
+      });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  // Dispara markRead manual con respuesta detallada — para probar sin abrir el chat.
+  app.post('/api/debug/force-mark-read', async (req, res) => {
+    try {
+      const t = getTenant(req);
+      const { jid } = req.body || {};
+      if (!jid) return res.status(400).json({ error: 'jid requerido' });
+      const session = tenants.sessionForJid(t.tenantId, jid);
+      if (!session) return res.status(404).json({ error: 'sin sesión WA' });
+      // Capturamos la respuesta del GHL markConversation también
+      const conv = t.conversations.get(jid);
+      const ghlConvId = conv?.ghlConversationId
+        || conv?.messages?.findLast?.((m) => m.ghlConversationId)?.ghlConversationId;
+      let ghlConvResp = { skipped: 'no ghlConversationId' };
+      if (ghlConvId && t.ghl?.accessToken) {
+        try {
+          const ghl = new GHLClient(t);
+          ghlConvResp = await ghl.markConversationAsRead(ghlConvId);
+        } catch (e) {
+          ghlConvResp = { error: e.message };
+        }
+      }
+      const result = await session.markRead(jid);
+      res.json({ ok: true, jid, ghlConvId, ghlConvResp, ...result });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message, stack: e.stack }); }
+  });
+
   // GET validation: GHL puede validar el URL con GET antes de aceptarlo
   app.get('/webhooks/ghl', (_req, res) => res.json({ ok: true, service: 'whatsapp-agent-mystore', endpoint: 'ghl-events' }));
 

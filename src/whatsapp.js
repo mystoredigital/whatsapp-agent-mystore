@@ -759,14 +759,30 @@ export class WhatsAppSession {
       const withoutGhlId = newlyRead.length - withGhlId.length;
       console.log(`[ghl:${this.store.tenantId}] markRead → GHL: ${withGhlId.length} con ghlMessageId, ${withoutGhlId} sin ghlMessageId (mensajes pre-deploy)`);
       const ghlClient = new GHLClient(this.store);
-      // Disparamos en paralelo; no esperamos a que terminen todas para responder.
-      // Errores individuales se loggean pero no bloquean al operador.
+
+      // 1) Actualizar status de delivery de cada mensaje (read). Esto NO baja el
+      //    badge de no-leídos en GHL — eso es contador a nivel conversación.
       Promise.allSettled(
         withGhlId.map((m) => ghlClient.updateMessageStatus(m.ghlMessageId, 'read')
-          .then(() => console.log(`[ghl:${this.store.tenantId}] read OK msg=${m.ghlMessageId}`))
-          .catch((e) => console.warn(`[ghl:${this.store.tenantId}] updateStatus ${m.ghlMessageId}: ${e.message}`))
+          .then(() => console.log(`[ghl:${this.store.tenantId}] msg-status read OK ${m.ghlMessageId}`))
+          .catch((e) => console.warn(`[ghl:${this.store.tenantId}] msg-status ${m.ghlMessageId}: ${e.message}`))
         )
       );
+
+      // 2) Resetear unreadCount=0 de la conversación — esto SÍ limpia el badge
+      //    en GHL Conversations UI. ghlConversationId se captura al primer
+      //    pushInbound; si no está (mensajes pre-deploy), buscamos en mensajes.
+      const conv = this.store.conversations.get(jid);
+      const ghlConvId = conv?.ghlConversationId
+        || conv?.messages?.findLast?.((m) => m.ghlConversationId)?.ghlConversationId
+        || newlyRead.find((m) => m.ghlConversationId)?.ghlConversationId;
+      if (ghlConvId) {
+        ghlClient.markConversationAsRead(ghlConvId)
+          .then((r) => console.log(`[ghl:${this.store.tenantId}] conv markRead OK ${ghlConvId} via=${r?.via}`))
+          .catch((e) => console.warn(`[ghl:${this.store.tenantId}] conv markRead ${ghlConvId}: ${e.message}`));
+      } else {
+        console.warn(`[ghl:${this.store.tenantId}] sin ghlConversationId para ${jid} — no se puede limpiar badge`);
+      }
     }
 
     return { read: newlyRead.length };

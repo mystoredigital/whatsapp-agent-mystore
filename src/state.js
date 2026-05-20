@@ -322,6 +322,11 @@ export class TenantStore extends EventEmitter {
     const m = conv.messages.find((mm) => mm.id === localId);
     if (!m) return false;
     Object.assign(m, patch);
+    // ghlConversationId también lo memorizamos a nivel conv para acceso rápido
+    // en markRead (no tener que escanear mensajes cada vez).
+    if (patch.ghlConversationId && !conv.ghlConversationId) {
+      conv.ghlConversationId = patch.ghlConversationId;
+    }
     this.persistConversations().catch(() => {});
     return true;
   }

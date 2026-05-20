@@ -123,14 +123,42 @@ export class GHLClient {
     });
   }
 
-  // Actualiza el status de un mensaje GHL (read/delivered/failed). Necesario para
-  // sincronizar lectura: cuando el operador abre el chat en la app, marcamos los
-  // mensajes como read en GHL para que dejen de aparecer como "sin leer".
+  // Actualiza el status de delivery de un mensaje GHL (read/delivered/failed).
+  // OJO: esto NO baja el badge de "sin leer" en GHL Conversations — ese es
+  // contador a nivel CONVERSACIÓN, no del mensaje individual. Usar también
+  // markConversationAsRead para limpiar el badge.
   async updateMessageStatus(messageId, status) {
     if (!messageId) return null;
     return this._req('PUT', `/conversations/messages/${messageId}/status`, {
       json: { status },
     });
+  }
+
+  // Resetea el unreadCount de la conversación a 0 — esto SÍ baja el badge en la UI
+  // de GHL Conversations. Intentamos primero el endpoint dedicado markAsRead, y si
+  // GHL no lo soporta, fallback al PUT genérico con unreadCount=0.
+  async markConversationAsRead(conversationId) {
+    if (!conversationId) return null;
+    try {
+      const r = await this._req('POST', `/conversations/${conversationId}/markAsRead`);
+      return { ok: true, via: 'markAsRead', resp: r };
+    } catch (e1) {
+      try {
+        const r = await this._req('PUT', `/conversations/${conversationId}`, {
+          json: { unreadCount: 0 },
+        });
+        return { ok: true, via: 'put-unread-0', resp: r };
+      } catch (e2) {
+        try {
+          const r = await this._req('PUT', `/conversations/${conversationId}`, {
+            json: { unread: false },
+          });
+          return { ok: true, via: 'put-unread-false', resp: r };
+        } catch (e3) {
+          throw new Error(`markConversationAsRead: markAsRead=${e1.message} | unreadCount=${e2.message} | unread=${e3.message}`);
+        }
+      }
+    }
   }
 
   // Crea un Custom Conversation Provider scoped a esta location. Patrón multi-tenant:
