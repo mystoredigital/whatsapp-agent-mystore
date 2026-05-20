@@ -123,6 +123,16 @@ export class GHLClient {
     });
   }
 
+  // Actualiza el status de un mensaje GHL (read/delivered/failed). Necesario para
+  // sincronizar lectura: cuando el operador abre el chat en la app, marcamos los
+  // mensajes como read en GHL para que dejen de aparecer como "sin leer".
+  async updateMessageStatus(messageId, status) {
+    if (!messageId) return null;
+    return this._req('PUT', `/conversations/messages/${messageId}/status`, {
+      json: { status },
+    });
+  }
+
   // Crea un Custom Conversation Provider scoped a esta location. Patrón multi-tenant:
   // cada sub-account que instala la app obtiene su propio providerId — el providerId
   // del Marketplace está scoped a la sub-account donde se creó originalmente.

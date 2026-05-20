@@ -64,6 +64,15 @@ export class TenantStore extends EventEmitter {
           delete conv.name;
           dirty = true;
         }
+        // Backfill unread tracking en convs viejas: trata todo como leído al cargar
+        // para no inundar WA con readMessages retroactivos.
+        if (!('unreadCount' in conv)) { conv.unreadCount = 0; dirty = true; }
+        if (Array.isArray(conv.messages)) {
+          const lastTs = conv.messages[conv.messages.length - 1]?.ts || Date.now();
+          for (const m of conv.messages) {
+            if (m.role === 'user' && !('readAt' in m)) { m.readAt = lastTs; dirty = true; }
+          }
+        }
         this.conversations.set(jid, conv);
       }
       if (dirty) this.persistConversations().catch(() => {});
@@ -245,6 +254,7 @@ export class TenantStore extends EventEmitter {
         // chats grupales. El operador puede flipear a IA per-grupo si quiere.
         mode: isGroup ? 'human' : 'ai',
         messages: [], updatedAt: Date.now(),
+        unreadCount: 0,
       });
     } else if (name && name.trim()) {
       const conv = this.conversations.get(jid);
@@ -273,9 +283,58 @@ export class TenantStore extends EventEmitter {
     conv.messages.push({ ...msg, ts: msg.ts || Date.now() });
     if (conv.messages.length > 200) conv.messages = conv.messages.slice(-200);
     conv.updatedAt = Date.now();
+    // Solo los mensajes entrantes del contacto cuentan como "no leídos".
+    // Mensajes assistant/manual/system son del operador o del sistema → ya están "leídos".
+    if (msg.role === 'user') conv.unreadCount = (conv.unreadCount || 0) + 1;
     this.persistConversations().catch(() => {});
     this.emit('message', { tenantId: this.tenantId, jid, message: msg, conversation: conv });
     return conv;
+  }
+
+  // Marca como leídos todos los mensajes user pendientes en la conv. Devuelve
+  // los que cambiaron (con sus claves originales en cached protos, si están)
+  // para que el caller pueda propagar a WA + GHL.
+  markConversationRead(jid) {
+    const conv = this.conversations.get(jid);
+    if (!conv) return null;
+    const now = Date.now();
+    const newlyRead = [];
+    for (const m of conv.messages) {
+      if (m.role === 'user' && !m.readAt) {
+        m.readAt = now;
+        newlyRead.push(m);
+      }
+    }
+    const wasUnread = (conv.unreadCount || 0) > 0;
+    conv.unreadCount = 0;
+    if (newlyRead.length || wasUnread) {
+      this.persistConversations().catch(() => {});
+      this.emit('read', { tenantId: this.tenantId, jid, conversation: conv, count: newlyRead.length });
+    }
+    return { conv, newlyRead };
+  }
+
+  // Aplica un patch a un mensaje específico (busca por m.id). Usado para añadir
+  // metadata después de creado, como el ghlMessageId que llega async tras pushear.
+  updateMessageMeta(jid, localId, patch) {
+    const conv = this.conversations.get(jid);
+    if (!conv || !localId) return false;
+    const m = conv.messages.find((mm) => mm.id === localId);
+    if (!m) return false;
+    Object.assign(m, patch);
+    this.persistConversations().catch(() => {});
+    return true;
+  }
+
+  // Busca un mensaje por su ghlMessageId. Útil para la dirección GHL → app
+  // cuando llega un evento de read y necesitamos resolver a qué jid pertenece.
+  findConvByGhlMessageId(ghlMessageId) {
+    if (!ghlMessageId) return null;
+    for (const conv of this.conversations.values()) {
+      const m = conv.messages.find((mm) => mm.ghlMessageId === ghlMessageId);
+      if (m) return { conv, message: m };
+    }
+    return null;
   }
 
   setMode(jid, mode) {

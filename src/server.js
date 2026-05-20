@@ -326,6 +326,28 @@ export function startServer(port = 3000) {
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
 
+  app.post('/api/conversations/read', async (req, res) => {
+    try {
+      const t = getTenant(req);
+      const { jid } = req.body || {};
+      if (!jid) return res.status(400).json({ error: 'jid requerido' });
+      const session = tenants.sessionForJid(t.tenantId, jid);
+      if (!session) {
+        // Sin sesión WA disponible (puede pasar si todos los números están desconectados)
+        // — al menos marcamos como leído en local + GHL.
+        const result = t.markConversationRead(jid);
+        if (result && result.newlyRead.length && t.ghl?.accessToken) {
+          const ghl = new GHLClient(t);
+          Promise.allSettled(result.newlyRead.filter((m) => m.ghlMessageId)
+            .map((m) => ghl.updateMessageStatus(m.ghlMessageId, 'read').catch(() => {})));
+        }
+        return res.json({ ok: true, read: result?.newlyRead?.length || 0, waSync: false });
+      }
+      const result = await session.markRead(jid);
+      res.json({ ok: true, ...result, waSync: true });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
   app.post('/api/conversations/merge', async (req, res) => {
     try {
       const t = getTenant(req);
@@ -776,9 +798,36 @@ export function startServer(port = 3000) {
   // GHL_WEBHOOK_PUBLIC_KEY está set. NO aplica a /webhooks/ghl/outbound porque
   // el Conversation Provider outbound NO viene firmado por GHL.
   app.post('/webhooks/ghl', ghlWebhookGuard, (req, res) => {
-    console.log('[webhook ghl] type:', req.body?.type, 'location:', req.body?.locationId);
+    const body = req.body || {};
+    const type = body.type;
+    console.log('[webhook ghl] type:', type, 'location:', body.locationId);
     res.json({ ok: true });
+
+    // Dirección inversa de read sync: cuando alguien marca un chat como leído en
+    // GHL Conversations, queremos reflejarlo en la app y mandar doble-check azul
+    // al contacto vía WA. GHL emite ConversationUnreadUpdate cuando el unreadCount
+    // cambia (read o nuevo mensaje). Filtramos por unreadCount=0 → fue marcado leído.
+    if (type === 'ConversationUnreadUpdate') {
+      handleGhlReadUpdate(body).catch((e) => console.error('[webhook ghl read]', e.message));
+    }
   });
+
+  async function handleGhlReadUpdate(body) {
+    const { locationId, contactId, conversationId, unreadCount } = body;
+    if (!locationId) return;
+    // Solo nos interesa cuando bajó a 0 (lectura). Si subió, fue un mensaje nuevo
+    // que ya manejamos por otro lado.
+    if (unreadCount !== 0 && unreadCount !== '0') return;
+    const tenant = tenants.get(locationId);
+    if (!tenant) return console.warn(`[webhook ghl read] tenant ${locationId} no existe`);
+    const jid = contactId ? tenant.getJidByContactId(contactId) : null;
+    if (!jid) return console.warn(`[webhook ghl read] no se pudo resolver jid: contactId=${contactId} conversationId=${conversationId}`);
+    const session = tenants.sessionForJid(locationId, jid);
+    // skipGhl: no devolver la lectura a GHL (loop).
+    if (session) await session.markRead(jid, { skipGhl: true });
+    else tenant.markConversationRead(jid);
+    console.log(`[webhook ghl read] sincronizado jid=${jid} (desde GHL)`);
+  }
 
   // --- Socket.io ---
   const httpServer = http.createServer(app);
@@ -796,7 +845,7 @@ export function startServer(port = 3000) {
     });
   });
 
-  for (const ev of ['message', 'mode', 'config', 'connection', 'metrics', 'conv:removed']) {
+  for (const ev of ['message', 'mode', 'config', 'connection', 'metrics', 'conv:removed', 'read']) {
     tenants.on(ev, (payload) => {
       io.to(`tenant:${payload.tenantId}`).emit(ev, payload);
     });

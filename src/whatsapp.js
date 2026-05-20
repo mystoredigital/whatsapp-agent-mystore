@@ -582,14 +582,21 @@ export class WhatsAppSession {
     // Mapeo crítico: contactId → jid para enrutar outbound de GHL al JID correcto (especialmente con LID)
     this.store.linkContact(contactId, jid);
 
-    await ghl.sendInboundMessage({
+    const resp = await ghl.sendInboundMessage({
       contactId,
       message: text,
       conversationProviderId: providerId,
       altId: `wa:${altId}`,
       attachments,
     });
-    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId} (jid=${jid}) attachments=${(attachments || []).length}`);
+    // Capturamos el messageId que GHL devuelve para poder llamar
+    // updateMessageStatus(read) más tarde y sincronizar el estado de lectura.
+    const ghlMessageId = resp?.messageId || resp?.message?.id || resp?.id;
+    const ghlConversationId = resp?.conversationId || resp?.message?.conversationId;
+    if (ghlMessageId && altId) {
+      this.store.updateMessageMeta(jid, altId, { ghlMessageId, ...(ghlConversationId ? { ghlConversationId } : {}) });
+    }
+    console.log(`[ghl:${this.store.tenantId}] inbound → contact ${contactId} (jid=${jid}) attachments=${(attachments || []).length} ghlMsg=${ghlMessageId || 'n/a'}`);
   }
 
   async _pushAIReplyToGHL({ jid, phone, text }) {
@@ -706,6 +713,56 @@ export class WhatsAppSession {
     this.store.setNumberConnection(this.numberId, 'disconnected');
     console.log(`[wa:${this._tag}] relink: authDir borrado, reiniciando…`);
     return this.start();
+  }
+
+  // Marca como leídos los mensajes pendientes de una conv y propaga a WA y GHL.
+  // - WA: sock.readMessages(keys) → el contacto ve doble check azul.
+  // - GHL: PUT /conversations/messages/{id}/status status=read → desaparece el
+  //        "sin leer" en GHL Conversations.
+  // opts.skipWa / opts.skipGhl: evita el ping de vuelta cuando la lectura
+  // vino justo desde ese lado (no queremos bucles GHL ↔ app).
+  async markRead(jid, opts = {}) {
+    const result = this.store.markConversationRead(jid);
+    if (!result) return { read: 0 };
+    const { newlyRead } = result;
+    if (!newlyRead.length) return { read: 0 };
+
+    if (!opts.skipWa && this.sock) {
+      // Limitamos a últimos 50 para no spamear si la conv es muy vieja
+      const recent = newlyRead.slice(-50);
+      const keys = recent.map((m) => {
+        const cached = this._msgCache.get(m.id);
+        if (cached?.key) return cached.key;
+        // Fallback si la key no está cacheada (e.g. reinicio del server entre
+        // recibir el mensaje y marcarlo leído)
+        return {
+          remoteJid: jid,
+          id: m.id,
+          fromMe: false,
+          ...(m.senderJid ? { participant: m.senderJid } : {}),
+        };
+      }).filter((k) => k.id);
+      if (keys.length) {
+        await this.sock.readMessages(keys).catch((e) =>
+          console.warn(`[wa:${this._tag}] readMessages falló (${keys.length} keys): ${e.message}`)
+        );
+      }
+    }
+
+    if (!opts.skipGhl && this.store.ghl?.accessToken) {
+      const ghlClient = new GHLClient(this.store);
+      // Disparamos en paralelo; no esperamos a que terminen todas para responder.
+      // Errores individuales se loggean pero no bloquean al operador.
+      Promise.allSettled(
+        newlyRead
+          .filter((m) => m.ghlMessageId)
+          .map((m) => ghlClient.updateMessageStatus(m.ghlMessageId, 'read')
+            .catch((e) => console.warn(`[ghl:${this.store.tenantId}] updateStatus ${m.ghlMessageId}: ${e.message}`))
+          )
+      );
+    }
+
+    return { read: newlyRead.length };
   }
 
   // Cierra el sock sin borrar creds. Útil al eliminar el número (lógica en registry).

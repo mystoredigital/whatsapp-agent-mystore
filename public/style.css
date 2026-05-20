@@ -115,6 +115,23 @@ body.embed .topbar { padding:8px 16px; }
 .sidebar .meta { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: #5a6e7f; }
 .sidebar .mode-badge { background: #243240; padding: 1px 6px; border-radius: 8px; }
 .sidebar .mode-badge.human { background: #5a3a14; color: #ffb300; }
+.sidebar li.has-unread .name { font-weight: 700; }
+.sidebar li.has-unread .preview { color: #c0cdd9; }
+.unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  background: #1d9bf0;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 9px;
+  line-height: 1;
+  margin-right: 4px;
+}
 
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .chat-header { flex-shrink: 0; }

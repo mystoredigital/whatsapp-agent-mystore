@@ -436,18 +436,42 @@ function renderChatList() {
   for (const conv of filtered) {
     const li = document.createElement('li');
     if (conv.jid === state.activeJid) li.classList.add('active');
+    const unread = conv.unreadCount || 0;
+    if (unread > 0) li.classList.add('has-unread');
     const last = conv.messages[conv.messages.length - 1];
     const previewPrefix = conv.isGroup && last?.senderName ? `${last.senderName}: ` : '';
     const groupBadge = conv.isGroup ? '<span class="group-badge" title="Grupo">👥</span> ' : '';
+    const unreadBadge = unread > 0
+      ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>`
+      : '';
     li.innerHTML = `
       <div class="name">${groupBadge}${escapeHtml(displayName(conv))}</div>
       <div class="preview">${last ? escapeHtml((previewPrefix + (last.text || '')).slice(0, 60)) : '(sin mensajes)'}</div>
       <div class="meta">
+        ${unreadBadge}
         <span class="mode-badge ${conv.mode}">${conv.mode === 'ai' ? 'IA' : 'HUMANO'}</span>
         <span>${last ? fmtTime(last.ts) : ''}</span>
       </div>`;
     li.onclick = () => selectChat(conv.jid);
     list.appendChild(li);
+  }
+}
+
+async function markChatRead(jid) {
+  if (!jid) return;
+  const conv = state.conversations.find((c) => c.jid === jid);
+  if (!conv || !conv.unreadCount) return;
+  // Optimista: actualizamos UI inmediatamente; el servidor confirmará por socket
+  conv.unreadCount = 0;
+  renderChatList();
+  try {
+    await fetch('/api/conversations/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant: state.tenantId, jid }),
+    });
+  } catch (e) {
+    console.warn('[app] mark read falló:', e.message);
   }
 }
 
@@ -580,6 +604,7 @@ function selectChat(jid) {
   clearReplyContext();
   renderChatList();
   renderMessages();
+  markChatRead(jid);
 }
 
 async function setMode(jid, mode) {
@@ -803,7 +828,17 @@ socket.on('message', ({ conversation }) => {
   else state.conversations.unshift(conversation);
   state.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
   renderChatList();
-  if (conversation.jid === state.activeJid) renderMessages();
+  if (conversation.jid === state.activeJid) {
+    renderMessages();
+    // El operador está mirando este chat → marcar leído de inmediato (WA + GHL).
+    if (conversation.unreadCount > 0) markChatRead(conversation.jid);
+  }
+});
+socket.on('read', ({ jid, conversation }) => {
+  const i = state.conversations.findIndex((c) => c.jid === jid);
+  if (i >= 0) state.conversations[i] = conversation;
+  renderChatList();
+  if (jid === state.activeJid) renderMessages();
 });
 socket.on('conv:removed', ({ jid, mergedInto }) => {
   state.conversations = state.conversations.filter((c) => c.jid !== jid);
