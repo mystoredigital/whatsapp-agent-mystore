@@ -27,6 +27,14 @@ export const openapiSpec = {
     { name: 'GHL', description: 'Operaciones específicas de GoHighLevel' },
     { name: 'Audit', description: 'Registro append-only de acciones del operador' },
     { name: 'API Keys', description: 'Tokens para acceso programático (Bearer). Una key fija el tenant.' },
+    {
+      name: 'Webhooks',
+      description:
+        'Suscripción a eventos salientes. El server hace POST al url registrado con header ' +
+        '`X-Webhook-Signature: sha256=<hex>` donde hex = HMAC-SHA256(secret, body crudo). ' +
+        'Eventos: message.received, message.sent, message.blocked, connection.changed, mode.changed. ' +
+        'Reintentos: 2 con backoff (2s, 8s). Timeout: 10s. Solo entrega a webhooks no revocados.',
+    },
   ],
   components: {
     securitySchemes: {
@@ -588,6 +596,90 @@ export const openapiSpec = {
           },
           403: { description: 'No se puede gestionar keys usando una key' },
         },
+      },
+    },
+    '/api/webhooks': {
+      get: {
+        tags: ['Webhooks'],
+        summary: 'Lista los webhooks del tenant (sin secret) + eventos soportados',
+        security: [{ basicAuth: [] }, { embedCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/TenantId' }],
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    webhooks: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'string' },
+                          tenantId: { type: 'string' },
+                          url: { type: 'string' },
+                          events: { type: 'array', items: { type: 'string' } },
+                          createdAt: { type: 'integer' },
+                          lastDeliveryAt: { type: 'integer', nullable: true },
+                          lastStatus: { type: 'integer', nullable: true, description: 'HTTP status del último intento (0 si timeout/red)' },
+                          lastError: { type: 'string', nullable: true },
+                          revokedAt: { type: 'integer', nullable: true },
+                        },
+                      },
+                    },
+                    supportedEvents: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      post: {
+        tags: ['Webhooks'],
+        summary: 'Crea un webhook (devuelve el secret UNA sola vez)',
+        security: [{ basicAuth: [] }, { embedCookie: [] }],
+        parameters: [{ $ref: '#/components/parameters/TenantId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['url', 'events'],
+                properties: {
+                  url: { type: 'string', format: 'uri', example: 'https://example.com/wa-hook' },
+                  events: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                      enum: ['message.received', 'message.sent', 'message.blocked', 'connection.changed', 'mode.changed'],
+                    },
+                    minItems: 1,
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'OK — el secret completo solo aparece aquí' },
+          400: { description: 'url inválida o events vacío' },
+        },
+      },
+    },
+    '/api/webhooks/{id}': {
+      delete: {
+        tags: ['Webhooks'],
+        summary: 'Revoca un webhook (queda guardado pero ya no recibe entregas)',
+        security: [{ basicAuth: [] }, { embedCookie: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/TenantId' },
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: { 200: { description: 'OK' }, 404: { description: 'No existe' } },
       },
     },
     '/api/keys/{id}': {

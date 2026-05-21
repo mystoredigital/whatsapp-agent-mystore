@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260521e" />
+<link rel="stylesheet" href="/style.css?v=20260521f" />
 </head>
 <body>
 <header class="topbar">
@@ -28,6 +28,7 @@
   <button id="btnGroups" class="btn" title="Elegir qué grupos ver en la bandeja">Grupos</button>
   <button id="btnAudit" class="btn" title="Ver últimas acciones registradas">Audit</button>
   <button id="btnApiKeys" class="btn" title="Gestionar tokens de acceso programático (Bearer)">API keys</button>
+  <button id="btnWebhooks" class="btn" title="Suscribirse a eventos salientes (POST firmado con HMAC)">Webhooks</button>
   <button id="btnPrompt" class="btn">Editar prompt</button>
 </header>
 
@@ -98,6 +99,34 @@
     </div>
     <div class="row" style="margin-top:16px">
       <button id="numbersClose" class="btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<div id="webhooksModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>Webhooks salientes</h3>
+    <p style="color:#8899a6;font-size:13px;margin-top:0">El server hace POST al URL registrado cuando ocurren eventos. Cada delivery lleva header <code>X-Webhook-Signature: sha256=&lt;hex&gt;</code> donde hex = HMAC-SHA256(secret, body). El receptor recalcula y compara para validar autenticidad. 2 reintentos con backoff (2s, 8s).</p>
+    <div id="webhooksList" class="webhooks-list">
+      <div class="empty">Cargando…</div>
+    </div>
+    <div class="add-number">
+      <h4>Crear nuevo webhook</h4>
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <input type="url" id="newWebhookUrl" placeholder="https://tu-server.com/wa-hook" />
+        <div id="newWebhookEvents" class="webhook-events">
+          <!-- checkboxes generados dinámicamente -->
+        </div>
+        <button id="webhooksCreate" class="btn primary">Crear webhook</button>
+      </div>
+      <div id="newWebhookResult" class="new-key-result hidden">
+        <div class="warn-banner">⚠ Guarda el secret AHORA. No volverá a mostrarse.</div>
+        <code id="newWebhookSecret"></code>
+        <button id="newWebhookCopy" class="btn">Copiar</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="webhooksClose" class="btn">Cerrar</button>
     </div>
   </div>
 </div>

@@ -7,6 +7,7 @@ import swaggerUi from 'swagger-ui-express';
 import { openapiSpec } from './openapi.js';
 import { logAudit, listAudit, actorFrom } from './audit.js';
 import { createKey, listKeys, revokeKey, verifyToken } from './apiKeys.js';
+import { createWebhook, listWebhooks, revokeWebhook, dispatch as dispatchWebhook, WEBHOOK_EVENTS } from './webhooks.js';
 import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
@@ -403,6 +404,7 @@ export function startServer(port = 3000) {
       const { jid, mode } = req.body || {};
       if (!jid || !['ai', 'human'].includes(mode)) return res.status(400).json({ error: 'jid y mode requeridos' });
       logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'mode', target: { jid }, meta: { mode } });
+      dispatchWebhook(t.tenantId, 'mode.changed', { jid, mode, actor: actorFrom(req) });
       res.json({ ok: true, conversation: t.setMode(jid, mode) });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -568,7 +570,9 @@ export function startServer(port = 3000) {
     } catch (e) {
       if (e.status === 429) {
         const retryS = Math.ceil((e.retryAfterMs || 1000) / 1000);
-        logAudit({ tenantId: req.embedLocationId || req.apiKey?.tenantId || req.query.tenant, actor: actorFrom(req), type: 'send-blocked', target: { jid: req.body?.jid }, meta: { reason: e.reason, retryAfterMs: e.retryAfterMs } });
+        const tid = req.embedLocationId || req.apiKey?.tenantId || req.query.tenant;
+        logAudit({ tenantId: tid, actor: actorFrom(req), type: 'send-blocked', target: { jid: req.body?.jid }, meta: { reason: e.reason, retryAfterMs: e.retryAfterMs } });
+        dispatchWebhook(tid, 'message.blocked', { jid: req.body?.jid, reason: e.reason, retryAfterMs: e.retryAfterMs, actor: actorFrom(req) });
         return res.status(429).set('Retry-After', String(retryS)).json({ error: e.message, reason: e.reason, retryAfterMs: e.retryAfterMs });
       }
       res.status(e.status || 500).json({ error: e.message });
@@ -616,7 +620,9 @@ export function startServer(port = 3000) {
     } catch (e) {
       if (e.status === 429) {
         const retryS = Math.ceil((e.retryAfterMs || 1000) / 1000);
-        logAudit({ tenantId: req.embedLocationId || req.apiKey?.tenantId || req.query.tenant, actor: actorFrom(req), type: 'send-blocked', meta: { reason: e.reason, retryAfterMs: e.retryAfterMs, media: true } });
+        const tid = req.embedLocationId || req.apiKey?.tenantId || req.query.tenant;
+        logAudit({ tenantId: tid, actor: actorFrom(req), type: 'send-blocked', meta: { reason: e.reason, retryAfterMs: e.retryAfterMs, media: true } });
+        dispatchWebhook(tid, 'message.blocked', { reason: e.reason, retryAfterMs: e.retryAfterMs, media: true, actor: actorFrom(req) });
         return res.status(429).set('Retry-After', String(retryS)).json({ error: e.message, reason: e.reason, retryAfterMs: e.retryAfterMs });
       }
       console.error('[send-media]', e);
@@ -676,6 +682,40 @@ export function startServer(port = 3000) {
       const ok = await revokeKey(req.params.id);
       if (!ok) return res.status(404).json({ error: 'key no existe' });
       logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'key-revoke', target: { keyId: req.params.id } });
+      res.json({ ok: true });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  // --- Webhooks salientes ---
+  // Mismo blindaje que keys: una API key NO puede gestionar webhooks.
+  app.get('/api/webhooks', async (req, res) => {
+    if (rejectIfBearer(req, res)) return;
+    try {
+      const t = getTenant(req);
+      const webhooks = await listWebhooks({ tenantId: t.tenantId });
+      res.json({ webhooks, supportedEvents: WEBHOOK_EVENTS });
+    } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+  });
+
+  app.post('/api/webhooks', async (req, res) => {
+    if (rejectIfBearer(req, res)) return;
+    try {
+      const t = getTenant(req);
+      const { url, events } = req.body || {};
+      const created = await createWebhook({ tenantId: t.tenantId, url, events });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'webhook-create', target: { webhookId: created.id }, meta: { url: created.url, events: created.events } });
+      // El secret se muestra UNA vez en la respuesta del create — la lista subsiguiente lo oculta.
+      res.json({ ok: true, webhook: created });
+    } catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+  });
+
+  app.delete('/api/webhooks/:id', async (req, res) => {
+    if (rejectIfBearer(req, res)) return;
+    try {
+      const t = getTenant(req);
+      const ok = await revokeWebhook(req.params.id);
+      if (!ok) return res.status(404).json({ error: 'webhook no existe' });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'webhook-revoke', target: { webhookId: req.params.id } });
       res.json({ ok: true });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });

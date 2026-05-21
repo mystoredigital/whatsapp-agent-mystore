@@ -411,6 +411,86 @@ function renderApiKeyRow(k) {
   </div>`;
 }
 
+// ---------- Webhooks ----------
+
+let _webhookEvents = [];
+
+async function openWebhooksModal() {
+  $('webhooksModal').classList.remove('hidden');
+  $('newWebhookResult').classList.add('hidden');
+  $('newWebhookUrl').value = '';
+  await loadWebhooks();
+}
+
+async function loadWebhooks() {
+  const list = $('webhooksList');
+  list.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const r = await fetch(withTenant('/api/webhooks'));
+    const data = await r.json();
+    if (!r.ok) {
+      list.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || r.status)}</div>`;
+      return;
+    }
+    _webhookEvents = data.supportedEvents || [];
+    renderEventCheckboxes();
+    const hooks = data.webhooks || [];
+    if (!hooks.length) {
+      list.innerHTML = '<div class="empty">Aún no hay webhooks registrados.</div>';
+      return;
+    }
+    list.innerHTML = hooks.map(renderWebhookRow).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderEventCheckboxes() {
+  $('newWebhookEvents').innerHTML = _webhookEvents
+    .map((ev) => `<label class="event-chk"><input type="checkbox" value="${escapeHtml(ev)}" checked /> ${escapeHtml(ev)}</label>`)
+    .join('');
+}
+
+function renderWebhookRow(w) {
+  const created = new Date(w.createdAt).toLocaleString();
+  const last = w.lastDeliveryAt
+    ? `${new Date(w.lastDeliveryAt).toLocaleString()} · status ${w.lastStatus}${w.lastError ? ` · ${escapeHtml(w.lastError)}` : ''}`
+    : 'nunca';
+  const revoked = !!w.revokedAt;
+  const status = revoked ? 'revocado' : 'activo';
+  const cls = revoked ? 'revoked' : (w.lastError ? 'warn' : 'active');
+  return `<div class="webhook-row ${cls}">
+    <div class="info">
+      <div class="label">${escapeHtml(w.url)} <span class="state ${cls}">${status}</span></div>
+      <div class="events">${escapeHtml((w.events || []).join(' · '))}</div>
+      <div class="id">id: ${escapeHtml(w.id)} · creado ${escapeHtml(created)} · último: ${last}</div>
+    </div>
+    ${revoked ? '' : `<button class="btn" data-action="revoke-hook" data-hookid="${escapeHtml(w.id)}">Revocar</button>`}
+  </div>`;
+}
+
+async function createWebhook() {
+  const url = $('newWebhookUrl').value.trim();
+  if (!url) { alert('URL requerida'); return; }
+  const events = Array.from($('newWebhookEvents').querySelectorAll('input[type=checkbox]:checked')).map((cb) => cb.value);
+  if (!events.length) { alert('Selecciona al menos un evento'); return; }
+  const btn = $('webhooksCreate');
+  btn.disabled = true;
+  try {
+    const r = await fetch(withTenant('/api/webhooks'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, events }),
+    });
+    const data = await r.json();
+    if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+    $('newWebhookSecret').textContent = data.webhook.secret;
+    $('newWebhookResult').classList.remove('hidden');
+    $('newWebhookUrl').value = '';
+    await loadWebhooks();
+  } finally { btn.disabled = false; }
+}
+
 async function createApiKey() {
   const label = $('newKeyLabel').value.trim();
   if (!label) { alert('label requerido'); return; }
@@ -939,6 +1019,27 @@ on('auditType', 'change', loadAudit);
 on('btnApiKeys', 'click', openApiKeysModal);
 on('apiKeysClose', 'click', () => $('apiKeysModal').classList.add('hidden'));
 on('apiKeysCreate', 'click', createApiKey);
+
+on('btnWebhooks', 'click', openWebhooksModal);
+on('webhooksClose', 'click', () => $('webhooksModal').classList.add('hidden'));
+on('webhooksCreate', 'click', createWebhook);
+on('webhooksList', 'click', async (e) => {
+  const btn = e.target.closest('button[data-action="revoke-hook"]');
+  if (!btn) return;
+  const id = btn.dataset.hookid;
+  if (!confirm(`Revocar el webhook '${id}'? Dejará de recibir eventos.`)) return;
+  const r = await fetch(`/api/webhooks/${encodeURIComponent(id)}?tenant=${encodeURIComponent(state.tenantId)}`, { method: 'DELETE' });
+  const data = await r.json();
+  if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+  await loadWebhooks();
+});
+on('newWebhookCopy', 'click', () => {
+  const sec = $('newWebhookSecret').textContent;
+  navigator.clipboard?.writeText(sec).then(() => {
+    $('newWebhookCopy').textContent = 'Copiado ✓';
+    setTimeout(() => { $('newWebhookCopy').textContent = 'Copiar'; }, 1500);
+  });
+});
 on('apiKeysList', 'click', async (e) => {
   const btn = e.target.closest('button[data-action="revoke"]');
   if (!btn) return;

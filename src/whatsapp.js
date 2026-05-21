@@ -14,6 +14,7 @@ import { GHLClient } from './ghl/client.js';
 import { resolvePhoneAndJid, jidToPhone } from './ghl/phone.js';
 import { uploadBufferToR2, downloadUrlToBuffer, mimeToWa, isMediaConfigured } from './media.js';
 import { transcribeAudio, isWhisperConfigured } from './whisper.js';
+import { dispatch as dispatchWebhook } from './webhooks.js';
 
 const logger = pino({ level: 'warn' });
 
@@ -332,12 +333,14 @@ export class WhatsAppSession {
         this.store.setNumberConnection(this.numberId, 'connected');
         this._setMetric('connectedAt', Date.now());
         console.log(`[wa:${this._tag}] conectado`);
+        dispatchWebhook(this.store.tenantId, 'connection.changed', { numberId: this.numberId, state: 'connected' });
       }
       if (connection === 'close') {
         const code = new Boom(lastDisconnect?.error).output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
         this.store.setNumberConnection(this.numberId, loggedOut ? 'logged_out' : 'disconnected');
         this._setMetric('connectedAt', null);
+        dispatchWebhook(this.store.tenantId, 'connection.changed', { numberId: this.numberId, state: loggedOut ? 'logged_out' : 'disconnected' });
         if (!loggedOut) {
           const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** this._reconnectAttempt);
           this._reconnectAttempt = Math.min(this._reconnectAttempt + 1, 10);
@@ -498,6 +501,15 @@ export class WhatsAppSession {
     if (!isGroup && resolved?.phone) this.store.registerPhone(effectiveJid, resolved.phone);
     this._bump('received');
     this._touchActivity();
+    dispatchWebhook(this.store.tenantId, 'message.received', {
+      jid: effectiveJid, numberId: this.numberId,
+      text: effectiveText, name,
+      isGroup, senderName, senderJid,
+      phone: resolved?.phone || null,
+      hasAttachment: !!attachment,
+      attachmentType: attachment?.type || null,
+      messageId: msg.key.id,
+    });
 
     // Mirror a GHL si el tenant está conectado Y tenemos teléfono real (NO grupos — local-only)
     if (!isGroup && resolved?.phone) {
@@ -573,6 +585,10 @@ export class WhatsAppSession {
         this._touchActivity();
         this.store.addMessage(effectiveJid, { role: 'assistant', text: reply, numberId: this.numberId, id: sent?.key?.id });
         this.store.noteNumberForJid(effectiveJid, this.numberId);
+        dispatchWebhook(this.store.tenantId, 'message.sent', {
+          jid: effectiveJid, numberId: this.numberId, text: reply,
+          source: 'ai', messageId: sent?.key?.id,
+        });
         // Mirror la respuesta de IA a GHL como inbound del lado business
         if (resolved?.phone) {
           this._pushAIReplyToGHL({ jid: effectiveJid, phone: resolved.phone, text: reply }).catch((e) => {
@@ -724,6 +740,10 @@ export class WhatsAppSession {
     this.store.noteNumberForJid(jid, this.numberId);
     this._bump('manual');
     this._touchActivity();
+    dispatchWebhook(this.store.tenantId, 'message.sent', {
+      jid, numberId: this.numberId, text,
+      source: 'manual', messageId: sent?.key?.id,
+    });
     if (opts.skipGhlMirror) return;
     if (jid.endsWith('@g.us')) return; // grupos son local-only, no se mirorean a GHL
     // Mensaje originado fuera de GHL (dashboard) → mirroreamos para que aparezca en GHL Conversations
@@ -770,6 +790,11 @@ export class WhatsAppSession {
     this.store.noteNumberForJid(jid, this.numberId);
     this._bump('manual');
     this._touchActivity();
+    dispatchWebhook(this.store.tenantId, 'message.sent', {
+      jid, numberId: this.numberId, text: caption || '',
+      source: 'manual-media', messageId: sent?.key?.id,
+      mediaType: waType, mediaUrl: url,
+    });
     if (opts.skipGhlMirror) return;
     if (jid.endsWith('@g.us')) return; // grupos local-only
     const phone = jidToPhone(jid);
