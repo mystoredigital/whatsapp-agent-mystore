@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260521j" />
+<link rel="stylesheet" href="/style.css?v=20260521k" />
 </head>
 <body>
 <div class="app">
@@ -134,10 +134,12 @@
 </div><!-- /.app -->
 
 <div id="qrModal" class="modal hidden">
-  <div class="modal-body">
+  <div class="modal-body qr-body">
+    <button id="qrClose" class="modal-close" type="button" title="Cerrar (Esc)">✕</button>
     <h3>Escanea para vincular WhatsApp</h3>
     <img id="qrImg" alt="QR" />
     <p>WhatsApp &gt; Dispositivos vinculados &gt; Vincular un dispositivo</p>
+    <p class="qr-hint">Puedes cerrar y volver a abrirlo desde <strong>Números → Re-link QR</strong>.</p>
   </div>
 </div>
 
@@ -303,6 +305,6 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app.js?v=20260521j"></script>
+<script src="/app.js?v=20260521k"></script>
 </body>
 </html>

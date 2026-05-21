@@ -66,16 +66,23 @@ function renderConnection() {
   $('btnRelink').classList.toggle('hidden', !anyLoggedOut);
 
   const modal = $('qrModal');
-  // Muestra QR del primer número en estado 'qr' (o el legacy state.connection.qr)
-  if (qrSrc) {
-    $('qrImg').src = qrSrc;
-    const titleEl = modal.querySelector('h3');
-    if (titleEl) titleEl.textContent = qrLabel ? `Escanea para vincular: ${qrLabel}` : 'Escanea para vincular WhatsApp';
-    modal.classList.remove('hidden');
-  } else if (state.connection.state === 'qr' && state.connection.qr) {
-    $('qrImg').src = state.connection.qr;
-    modal.classList.remove('hidden');
+  // Muestra QR del primer número en estado 'qr' (o el legacy state.connection.qr).
+  // Si el usuario cerró manualmente este mismo QR (state._qrDismissed), no lo reabrimos
+  // — pero cuando Baileys regenera (qrSrc cambia) resetamos la flag para mostrar el nuevo.
+  const effectiveQr = qrSrc || (state.connection.state === 'qr' && state.connection.qr ? state.connection.qr : null);
+  if (effectiveQr) {
+    if (state._qrDismissed && state._qrDismissed === effectiveQr) {
+      // Mismo QR que el usuario ya descartó — no reabrir
+      modal.classList.add('hidden');
+    } else {
+      state._qrDismissed = null;
+      $('qrImg').src = effectiveQr;
+      const titleEl = modal.querySelector('h3');
+      if (titleEl) titleEl.textContent = qrLabel ? `Escanea para vincular: ${qrLabel}` : 'Escanea para vincular WhatsApp';
+      modal.classList.remove('hidden');
+    }
   } else {
+    state._qrDismissed = null;
     modal.classList.add('hidden');
   }
 
@@ -1143,6 +1150,21 @@ on('auditType', 'change', loadAudit);
 on('btnApiKeys', 'click', openApiKeysModal);
 on('apiKeysClose', 'click', () => $('apiKeysModal').classList.add('hidden'));
 on('apiKeysCreate', 'click', createApiKey);
+
+// Cierre del modal QR — recuerda el data URL descartado para no reabrirlo mientras
+// Baileys siga emitiendo el mismo QR. Al regenerarse (cada ~20-60s), se vuelve a mostrar.
+function dismissQr() {
+  const modal = $('qrModal');
+  state._qrDismissed = $('qrImg').src || true;
+  modal.classList.add('hidden');
+}
+on('qrClose', 'click', dismissQr);
+// Click en el backdrop (fuera del .qr-body) cierra también
+on('qrModal', 'click', (e) => { if (e.target.id === 'qrModal') dismissQr(); });
+// Esc cierra el QR si está abierto
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('qrModal').classList.contains('hidden')) dismissQr();
+});
 
 on('btnStats', 'click', openStatsModal);
 on('statsClose', 'click', () => $('statsModal').classList.add('hidden'));
