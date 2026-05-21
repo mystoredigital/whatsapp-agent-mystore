@@ -312,6 +312,55 @@ setInterval(() => {
   if (!$('numbersModal').classList.contains('hidden')) renderNumbersList();
 }, 30_000);
 
+// ---------- Audit log ----------
+
+async function openAuditModal() {
+  $('auditModal').classList.remove('hidden');
+  await loadAudit();
+}
+
+async function loadAudit() {
+  const list = $('auditList');
+  const countEl = $('auditCount');
+  list.innerHTML = '<div class="empty">Cargando…</div>';
+  countEl.textContent = '';
+  try {
+    const type = $('auditType').value;
+    const qs = new URLSearchParams({ tenant: state.tenantId, limit: '200' });
+    if (type) qs.set('type', type);
+    const r = await fetch(`/api/audit?${qs}`);
+    const data = await r.json();
+    if (!r.ok) {
+      list.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || r.status)}</div>`;
+      return;
+    }
+    const entries = data.entries || [];
+    countEl.textContent = `${entries.length} eventos`;
+    if (!entries.length) {
+      list.innerHTML = '<div class="empty">Sin eventos para este filtro.</div>';
+      return;
+    }
+    list.innerHTML = entries.map(renderAuditRow).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderAuditRow(e) {
+  const when = new Date(e.ts).toLocaleString();
+  const targetStr = e.target ? Object.entries(e.target).map(([k, v]) => `${k}=${v}`).join(' · ') : '';
+  const metaStr = e.meta ? JSON.stringify(e.meta) : '';
+  return `<div class="audit-row">
+    <div class="audit-when">${escapeHtml(when)}</div>
+    <div class="audit-type">${escapeHtml(e.type)}</div>
+    <div class="audit-actor">${escapeHtml(e.actor)}</div>
+    <div class="audit-detail">
+      ${targetStr ? `<span class="audit-target">${escapeHtml(targetStr)}</span>` : ''}
+      ${metaStr ? `<span class="audit-meta">${escapeHtml(metaStr)}</span>` : ''}
+    </div>
+  </div>`;
+}
+
 async function addNumber() {
   const id = $('newNumberId').value.trim();
   const label = $('newNumberLabel').value.trim();
@@ -812,6 +861,11 @@ on('groupsList', 'change', async (e) => {
     if (!ok) e.target.checked = !e.target.checked;
   }
 });
+on('btnAudit', 'click', openAuditModal);
+on('auditClose', 'click', () => $('auditModal').classList.add('hidden'));
+on('auditRefresh', 'click', loadAudit);
+on('auditType', 'change', loadAudit);
+
 on('btnPrompt', 'click', () => {
   $('promptText').value = state.config.systemPrompt;
   $('promptModal').classList.remove('hidden');

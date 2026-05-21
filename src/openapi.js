@@ -25,6 +25,7 @@ export const openapiSpec = {
     { name: 'Numbers', description: 'Multi-número: alta, baja y relink por tenant' },
     { name: 'Send', description: 'Envío manual de texto y media' },
     { name: 'GHL', description: 'Operaciones específicas de GoHighLevel' },
+    { name: 'Audit', description: 'Registro append-only de acciones del operador' },
   ],
   components: {
     securitySchemes: {
@@ -419,6 +420,53 @@ export const openapiSpec = {
         responses: {
           200: { description: 'OK con URL pública R2' },
           500: { description: 'R2 no configurado' },
+        },
+      },
+    },
+    '/api/audit': {
+      get: {
+        tags: ['Audit'],
+        summary: 'Últimas acciones registradas (ordenadas de más reciente a más antigua)',
+        parameters: [
+          { name: 'tenant', in: 'query', schema: { type: 'string' }, description: 'Filtra por tenantId' },
+          {
+            name: 'type', in: 'query',
+            schema: {
+              type: 'string',
+              enum: ['send', 'send-media', 'mode', 'ai-enabled', 'config', 'conv-merge',
+                     'group-toggle', 'number-add', 'number-remove', 'relink', 'provision-provider'],
+            },
+          },
+          { name: 'since', in: 'query', schema: { type: 'integer' }, description: 'Epoch ms — solo entries con ts >= since' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 200 } },
+        ],
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    entries: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          ts: { type: 'integer', description: 'epoch ms' },
+                          tenantId: { type: 'string', nullable: true },
+                          actor: { type: 'string', description: 'usuario Basic Auth o embed:<locationId|email>' },
+                          type: { type: 'string' },
+                          target: { type: 'object', nullable: true },
+                          meta: { type: 'object', nullable: true },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
     },

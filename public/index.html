@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260521a" />
+<link rel="stylesheet" href="/style.css?v=20260521b" />
 </head>
 <body>
 <header class="topbar">
@@ -26,6 +26,7 @@
   </label>
   <button id="btnNumbers" class="btn" title="Gestionar números de WhatsApp del tenant">Números</button>
   <button id="btnGroups" class="btn" title="Elegir qué grupos ver en la bandeja">Grupos</button>
+  <button id="btnAudit" class="btn" title="Ver últimas acciones registradas">Audit</button>
   <button id="btnPrompt" class="btn">Editar prompt</button>
 </header>
 
@@ -96,6 +97,37 @@
     </div>
     <div class="row" style="margin-top:16px">
       <button id="numbersClose" class="btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<div id="auditModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>Audit log</h3>
+    <p style="color:#8899a6;font-size:13px;margin-top:0">Últimas acciones del operador (envíos manuales, cambios de modo, alta/baja de números, etc). Append-only en data/audit.jsonl.</p>
+    <div class="row" style="margin-bottom:8px;gap:8px;align-items:center">
+      <select id="auditType" class="btn">
+        <option value="">Todos los tipos</option>
+        <option value="send">send</option>
+        <option value="send-media">send-media</option>
+        <option value="mode">mode</option>
+        <option value="ai-enabled">ai-enabled</option>
+        <option value="config">config</option>
+        <option value="conv-merge">conv-merge</option>
+        <option value="group-toggle">group-toggle</option>
+        <option value="number-add">number-add</option>
+        <option value="number-remove">number-remove</option>
+        <option value="relink">relink</option>
+        <option value="provision-provider">provision-provider</option>
+      </select>
+      <button id="auditRefresh" class="btn">Recargar</button>
+      <span id="auditCount" style="font-size:12px;color:#5b6b7a;margin-left:auto"></span>
+    </div>
+    <div id="auditList" class="audit-list">
+      <div class="empty">Cargando…</div>
+    </div>
+    <div class="row">
+      <button id="auditClose" class="btn primary">Cerrar</button>
     </div>
   </div>
 </div>

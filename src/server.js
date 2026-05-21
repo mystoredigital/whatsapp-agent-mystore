@@ -5,6 +5,7 @@ import { Server as IOServer } from 'socket.io';
 import path from 'node:path';
 import swaggerUi from 'swagger-ui-express';
 import { openapiSpec } from './openapi.js';
+import { logAudit, listAudit, actorFrom } from './audit.js';
 import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
@@ -339,6 +340,7 @@ export function startServer(port = 3000) {
       const { systemPrompt } = req.body || {};
       if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) return res.status(400).json({ error: 'systemPrompt requerido' });
       t.setPrompt(systemPrompt);
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'config', meta: { promptLength: systemPrompt.length } });
       res.json({ ok: true });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -371,6 +373,7 @@ export function startServer(port = 3000) {
       const { fromJid, toJid } = req.body || {};
       if (!fromJid || !toJid) return res.status(400).json({ error: 'fromJid y toJid requeridos' });
       const conv = await t.mergeConversations(fromJid, toJid);
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'conv-merge', target: { fromJid, toJid } });
       res.json({ ok: true, conversation: conv });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -380,6 +383,7 @@ export function startServer(port = 3000) {
       const t = getTenant(req);
       const { jid, mode } = req.body || {};
       if (!jid || !['ai', 'human'].includes(mode)) return res.status(400).json({ error: 'jid y mode requeridos' });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'mode', target: { jid }, meta: { mode } });
       res.json({ ok: true, conversation: t.setMode(jid, mode) });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -390,6 +394,7 @@ export function startServer(port = 3000) {
       const { enabled } = req.body || {};
       if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled (boolean) requerido' });
       t.setAiEnabled(enabled);
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'ai-enabled', meta: { enabled } });
       res.json({ ok: true, aiEnabled: t.config.aiEnabled });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -445,6 +450,7 @@ export function startServer(port = 3000) {
       if (!jid || !jid.endsWith('@g.us')) return res.status(400).json({ error: 'jid de grupo requerido (@g.us)' });
       if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled (boolean) requerido' });
       t.setGroupEnabled(jid, enabled);
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'group-toggle', target: { jid }, meta: { enabled } });
 
       // Al habilitar: crea conv placeholder con el nombre del grupo para que aparezca
       // en la sidebar inmediatamente, sin esperar al primer mensaje nuevo.
@@ -475,6 +481,7 @@ export function startServer(port = 3000) {
       if (req.body?.force) t.setGhlTokens({ conversationProviderId: null });
       const providerId = await ensureConversationProvider(t);
       if (!providerId) return res.status(500).json({ error: 'No se pudo crear (revisa logs del server)' });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'provision-provider', meta: { providerId, force: !!req.body?.force } });
       res.json({ ok: true, conversationProviderId: providerId });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -486,6 +493,7 @@ export function startServer(port = 3000) {
       const session = tenants.session(t.tenantId, numberId);
       if (!session) return res.status(404).json({ error: 'session no existe' });
       session.relink().catch((e) => console.error(`[relink ${t.tenantId}/${session.numberId}]`, e.message));
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'relink', target: { numberId: session.numberId } });
       res.json({ ok: true, numberId: session.numberId });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -510,6 +518,7 @@ export function startServer(port = 3000) {
       const { id, label } = req.body || {};
       if (!id) return res.status(400).json({ error: 'id requerido (slug del número)' });
       const entry = await tenants.addNumber(t.tenantId, { id, label });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'number-add', target: { numberId: entry.id }, meta: { label: entry.label } });
       res.json({ ok: true, number: { id: entry.id, label: entry.label, connection: entry.connection } });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -520,6 +529,7 @@ export function startServer(port = 3000) {
       const id = req.params.id;
       if (!t.numbers.has(id)) return res.status(404).json({ error: 'número no existe' });
       await tenants.removeNumber(t.tenantId, id);
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'number-remove', target: { numberId: id } });
       res.json({ ok: true, removed: id });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -534,6 +544,7 @@ export function startServer(port = 3000) {
         : tenants.sessionForJid(t.tenantId, jid);
       if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
       await session.send(jid, text, { quotedStanzaId });
+      logAudit({ tenantId: t.tenantId, actor: actorFrom(req), type: 'send', target: { jid, numberId: session.numberId }, meta: { length: text.length, quoted: !!quotedStanzaId } });
       res.json({ ok: true, numberId: session.numberId });
     } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
   });
@@ -570,11 +581,29 @@ export function startServer(port = 3000) {
         : tenants.sessionForJid(t.tenantId, jid);
       if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
       await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName: file.filename, caption }, { quotedStanzaId });
+      logAudit({
+        tenantId: t.tenantId, actor: actorFrom(req), type: 'send-media',
+        target: { jid, numberId: session.numberId },
+        meta: { mimetype, size: file.buffer.length, fileName: file.filename, hasCaption: !!caption },
+      });
       res.json({ ok: true, url: uploaded.url, numberId: session.numberId });
     } catch (e) {
       console.error('[send-media]', e);
       res.status(e.status || 500).json({ error: e.message });
     }
+  });
+
+  // Audit log: lista las últimas acciones del operador. Filtros opcionales por
+  // query string: tenant (default: todos), type, since (epoch ms), limit (default 200, max 500).
+  app.get('/api/audit', async (req, res) => {
+    try {
+      const tenantId = req.query.tenant || req.embedLocationId || null;
+      const type = req.query.type || null;
+      const since = req.query.since ? Number(req.query.since) : null;
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+      const entries = await listAudit({ tenantId, type, since, limit });
+      res.json({ entries });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // --- GHL Embed SSO ---
