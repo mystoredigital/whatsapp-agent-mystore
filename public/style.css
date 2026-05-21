@@ -137,9 +137,34 @@ body {
 .status.disconnected, .status.logged_out, .status.error { color: var(--danger); }
 .status.qr { color: var(--warning); }
 
-/* Modo embed (iframe en GHL) */
-body.embed .nav-sidebar { display: none; }
-body.embed .app { grid-template-columns: 1fr; }
+/* Modo embed (iframe en GHL): GHL ya tiene su sidebar a la izquierda,
+   asi que nosotros NO usamos columna lateral — convertimos el nav a una
+   barra horizontal compacta arriba del topbar. Asi los items admin
+   siguen accesibles sin duplicar la nav lateral de GHL. */
+body.embed .app {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+body.embed .nav-sidebar {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 8px 14px;
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+  overflow-y: visible;
+  overflow-x: auto;
+}
+body.embed .nav-brand { display: none; }
+body.embed .nav-footer { display: none; }
+body.embed .nav-section { flex-direction: row; gap: 2px; padding: 0; }
+body.embed .nav-section + .nav-section { padding-left: 8px; margin-left: 4px; border-left: 1px solid var(--border-soft); }
+body.embed .nav-title { display: none; }
+body.embed .nav-item { padding: 5px 10px; font-size: 12px; gap: 6px; }
+body.embed .nav-item .nav-icon { font-size: 12px; }
+body.embed .nav-item.active { box-shadow: inset 0 -2px 0 var(--accent); background: rgba(29,155,240,0.10); }
 body.embed #tenantSelect { display:none; }
 body.embed #ghlBadge { display:none; }
 body.embed .topbar { padding:8px 16px; }
