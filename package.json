@@ -22,6 +22,7 @@
     "googleapis": "^144.0.0",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "swagger-ui-express": "^5.0.1"
   }
 }

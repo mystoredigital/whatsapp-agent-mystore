@@ -3,6 +3,8 @@ import cookieParser from 'cookie-parser';
 import http from 'node:http';
 import { Server as IOServer } from 'socket.io';
 import path from 'node:path';
+import swaggerUi from 'swagger-ui-express';
+import { openapiSpec } from './openapi.js';
 import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
@@ -133,6 +135,10 @@ function authMiddleware(req, res, next) {
     req.path === '/embed.html' ||
     req.path === '/api/embed/sso' ||
     req.path === '/api/health' ||
+    req.path === '/api/docs' ||
+    req.path === '/api/docs/' ||
+    req.path.startsWith('/api/docs/') ||
+    req.path === '/api/docs.json' ||
     // Favicon/PWA assets: el navegador los pide antes de tener auth — bypass
     /^\/(favicon\.ico|favicon-\d+x\d+\.png|apple-touch-icon\.png|android-chrome-\d+x\d+\.png|site\.webmanifest)$/.test(req.path)
   ) return next();
@@ -304,6 +310,17 @@ export function startServer(port = 3000) {
   app.get('/embed', (_req, res) => res.sendFile(path.resolve('./public/embed.html')));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, tenants: tenants.list().length }));
+
+  // OpenAPI spec + Swagger UI — públicos, sin auth (no exponen datos del tenant)
+  app.get('/api/docs.json', (_req, res) => res.json(openapiSpec));
+  app.use(
+    '/api/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(openapiSpec, {
+      customSiteTitle: 'My Store · WhatsApp Agent API',
+      swaggerOptions: { persistAuthorization: true },
+    }),
+  );
 
   app.get('/api/tenants', (_req, res) => res.json({ tenants: tenants.list() }));
 
