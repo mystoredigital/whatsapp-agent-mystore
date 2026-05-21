@@ -411,6 +411,70 @@ function renderApiKeyRow(k) {
   </div>`;
 }
 
+// ---------- Stats / Resumen ----------
+
+async function openStatsModal() {
+  $('statsModal').classList.remove('hidden');
+  await loadStats();
+}
+
+async function loadStats() {
+  const body = $('statsBody');
+  body.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const r = await fetch(withTenant('/api/stats'));
+    const data = await r.json();
+    if (!r.ok) {
+      body.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || r.status)}</div>`;
+      return;
+    }
+    body.innerHTML = renderStats(data);
+  } catch (e) {
+    body.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function statCard(label, value, sub) {
+  return `<div class="stat-card">
+    <div class="stat-label">${escapeHtml(label)}</div>
+    <div class="stat-value">${escapeHtml(String(value))}</div>
+    ${sub ? `<div class="stat-sub">${escapeHtml(sub)}</div>` : ''}
+  </div>`;
+}
+
+function renderStats(s) {
+  const t = s.tenants, ss = s.sessions, c = s.conversations, m = s.messages;
+  const topRows = c.top.length
+    ? c.top.map((t) => `<div class="top-row">
+        <div class="top-name">${escapeHtml(t.name)}${t.isGroup ? ' <span class="muted">(grupo)</span>' : ''}</div>
+        <div class="top-meta">${t.messageCount} msgs · activo ${escapeHtml(formatAgo(t.updatedAt))}</div>
+      </div>`).join('')
+    : '<div class="empty" style="padding:14px">Sin actividad reciente.</div>';
+  return `
+    <div class="stats-grid">
+      ${statCard('Tenants conectados', `${t.connected} / ${t.total}`)}
+      ${statCard('Sesiones abiertas', `${ss.open} / ${ss.total}`)}
+      ${statCard('Conversaciones', c.total, `${c.activeToday} activas hoy`)}
+      ${statCard('Mode changes (mes)', m.modeChanges.month)}
+    </div>
+    <h4 class="stats-h">Mensajes enviados</h4>
+    <div class="stats-grid">
+      ${statCard('Hoy', m.sent.today)}
+      ${statCard('Últimos 7 días', m.sent.week)}
+      ${statCard('Últimos 30 días', m.sent.month)}
+    </div>
+    <h4 class="stats-h">Envíos bloqueados (rate limit)</h4>
+    <div class="stats-grid">
+      ${statCard('Hoy', m.blocked.today)}
+      ${statCard('Últimos 7 días', m.blocked.week)}
+      ${statCard('Últimos 30 días', m.blocked.month)}
+    </div>
+    <h4 class="stats-h">Top 5 conversaciones por actividad</h4>
+    <div class="top-list">${topRows}</div>
+    <div class="stats-asof">Datos calculados ${new Date(s.asOf).toLocaleString()} · scope: ${escapeHtml(s.scope)}</div>
+  `;
+}
+
 // ---------- Webhooks ----------
 
 let _webhookEvents = [];
@@ -1019,6 +1083,10 @@ on('auditType', 'change', loadAudit);
 on('btnApiKeys', 'click', openApiKeysModal);
 on('apiKeysClose', 'click', () => $('apiKeysModal').classList.add('hidden'));
 on('apiKeysCreate', 'click', createApiKey);
+
+on('btnStats', 'click', openStatsModal);
+on('statsClose', 'click', () => $('statsModal').classList.add('hidden'));
+on('statsRefresh', 'click', loadStats);
 
 on('btnWebhooks', 'click', openWebhooksModal);
 on('webhooksClose', 'click', () => $('webhooksModal').classList.add('hidden'));

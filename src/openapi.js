@@ -470,6 +470,47 @@ export const openapiSpec = {
         },
       },
     },
+    '/api/stats': {
+      get: {
+        tags: ['Tenants'],
+        summary: 'Resumen agregado (tenants conectados, sesiones, mensajes hoy/7d/30d, top chats)',
+        parameters: [{ $ref: '#/components/parameters/TenantId' }],
+        responses: {
+          200: {
+            description: 'OK',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    asOf: { type: 'integer' },
+                    scope: { type: 'string', description: 'tenantId o "all"' },
+                    tenants: { type: 'object', properties: { total: { type: 'integer' }, connected: { type: 'integer' } } },
+                    sessions: { type: 'object', properties: { total: { type: 'integer' }, open: { type: 'integer' } } },
+                    conversations: {
+                      type: 'object',
+                      properties: {
+                        total: { type: 'integer' },
+                        activeToday: { type: 'integer' },
+                        top: { type: 'array', items: { type: 'object' } },
+                      },
+                    },
+                    messages: {
+                      type: 'object',
+                      properties: {
+                        sent: { type: 'object', properties: { today: { type: 'integer' }, week: { type: 'integer' }, month: { type: 'integer' } } },
+                        blocked: { type: 'object', properties: { today: { type: 'integer' }, week: { type: 'integer' }, month: { type: 'integer' } } },
+                        modeChanges: { type: 'object', properties: { today: { type: 'integer' }, week: { type: 'integer' }, month: { type: 'integer' } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     '/api/audit': {
       get: {
         tags: ['Audit'],

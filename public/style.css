@@ -271,6 +271,21 @@ body.embed .topbar { padding:8px 16px; }
 .event-chk { display:flex;align-items:center;gap:4px;font-size:12px;color:#d6e1ec;cursor:pointer; }
 .event-chk input { cursor:pointer; }
 
+.stats-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px; }
+.stat-card { padding:14px;background:#16202a;border:1px solid #2a3744;border-radius:8px; }
+.stat-label { font-size:11px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px; }
+.stat-value { font-size:24px;font-weight:600;color:#e7e9ea;font-variant-numeric:tabular-nums; }
+.stat-sub { font-size:11px;color:#5b6b7a;margin-top:4px; }
+.stats-h { font-size:12px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin:14px 0 8px;font-weight:500; }
+.top-list { border:1px solid #2a3744;border-radius:6px;overflow:hidden; }
+.top-row { padding:9px 12px;border-bottom:1px solid #1c2630;display:flex;align-items:center;gap:12px; }
+.top-row:last-child { border-bottom:0; }
+.top-row:nth-child(odd) { background:#0f1419; }
+.top-name { flex:1;font-size:13px;color:#d6e1ec;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.top-name .muted { color:#5b6b7a;font-size:11px; }
+.top-meta { font-size:11px;color:#8899a6;font-family:ui-monospace,Menlo,monospace; }
+.stats-asof { margin-top:14px;font-size:11px;color:#5b6b7a;text-align:right; }
+
 .add-number { padding:12px;background:#0f1419;border:1px solid #2a3744;border-radius:6px; }
 .add-number h4 { margin:0 0 8px;font-size:13px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px; }
 .add-number .row { display:flex;gap:8px; }

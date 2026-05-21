@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260521f" />
+<link rel="stylesheet" href="/style.css?v=20260521g" />
 </head>
 <body>
 <header class="topbar">
@@ -24,6 +24,7 @@
     <input type="checkbox" id="aiGlobalToggle" />
     <span id="aiGlobalLabel">Modo humano global</span>
   </label>
+  <button id="btnStats" class="btn" title="Resumen agregado del tenant">Resumen</button>
   <button id="btnNumbers" class="btn" title="Gestionar números de WhatsApp del tenant">Números</button>
   <button id="btnGroups" class="btn" title="Elegir qué grupos ver en la bandeja">Grupos</button>
   <button id="btnAudit" class="btn" title="Ver últimas acciones registradas">Audit</button>
@@ -99,6 +100,17 @@
     </div>
     <div class="row" style="margin-top:16px">
       <button id="numbersClose" class="btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<div id="statsModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>Resumen</h3>
+    <div id="statsBody"><div class="empty">Cargando…</div></div>
+    <div class="row" style="margin-top:16px">
+      <button id="statsRefresh" class="btn">Recargar</button>
+      <button id="statsClose" class="btn primary">Cerrar</button>
     </div>
   </div>
 </div>

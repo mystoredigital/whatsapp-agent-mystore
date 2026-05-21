@@ -8,6 +8,7 @@ import { openapiSpec } from './openapi.js';
 import { logAudit, listAudit, actorFrom } from './audit.js';
 import { createKey, listKeys, revokeKey, verifyToken } from './apiKeys.js';
 import { createWebhook, listWebhooks, revokeWebhook, dispatch as dispatchWebhook, WEBHOOK_EVENTS } from './webhooks.js';
+import { computeStats } from './stats.js';
 import { tenants } from './tenants.js';
 import { buildAuthorizeUrl, exchangeCode, listLocations, getLocationToken } from './ghl/oauth.js';
 import { saveAgencyTokens, getFreshAgencyToken } from './ghl/agencies.js';
@@ -628,6 +629,16 @@ export function startServer(port = 3000) {
       console.error('[send-media]', e);
       res.status(e.status || 500).json({ error: e.message });
     }
+  });
+
+  // Resumen agregado: tenants/sesiones conectadas, mensajes enviados y bloqueados
+  // por ventana (hoy/semana/mes) y top conversaciones por actividad reciente.
+  app.get('/api/stats', async (req, res) => {
+    try {
+      const tenantId = req.query.tenant || req.embedLocationId || req.apiKey?.tenantId || null;
+      const stats = await computeStats({ tenantId });
+      res.json(stats);
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // Audit log: lista las últimas acciones del operador. Filtros opcionales por
