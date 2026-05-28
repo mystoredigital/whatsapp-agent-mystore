@@ -123,6 +123,26 @@ export class GHLClient {
     });
   }
 
+  // Registra un mensaje YA enviado externamente (por Baileys: operador desde el
+  // celular, IA, o dashboard local) en el hilo de GHL — como OUTBOUND. A
+  // diferencia de sendInboundMessage NO dispara la notificación de "nuevo
+  // mensaje" en LeadConnector (porque GHL lo trata como saliente nuestro).
+  // Endpoint: POST /conversations/messages/outbound (Add an external outbound
+  // message). No dispara el deliveryUrl del Custom Provider — el mensaje ya se
+  // envió por fuera, solo se está registrando.
+  async sendOutboundMessage({ contactId, message, conversationProviderId, altId, attachments, type = 'Custom' }) {
+    return this._req('POST', '/conversations/messages/outbound', {
+      json: {
+        type,
+        contactId,
+        message,
+        conversationProviderId,
+        ...(altId ? { altId } : {}),
+        ...(attachments && attachments.length ? { attachments } : {}),
+      },
+    });
+  }
+
   // Actualiza el status de delivery de un mensaje GHL (read/delivered/failed).
   // OJO: esto NO baja el badge de "sin leer" en GHL Conversations — ese es
   // contador a nivel CONVERSACIÓN, no del mensaje individual. Usar también

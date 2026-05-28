@@ -899,6 +899,16 @@ export function startServer(port = 3000) {
     // Routing multi-número: usa el número que último interactuó con este contacto.
     const session = tenants.sessionForJid(locationId, jid);
     if (!session) return console.warn(`[webhook outbound] session ${locationId} no existe`);
+
+    // Guardia anti-loop: si nosotros pusheamos este mensaje a GHL via
+    // /conversations/messages/outbound (operador-desde-celular o IA), el
+    // messageId quedó marcado en _outboundSeen. Si GHL nos lo devuelve como
+    // webhook (no debería, pero por si acaso), descartamos sin reenviar.
+    if (messageId && session.isOutboundSeen(messageId)) {
+      console.log(`[webhook outbound] msgId=${messageId} es eco de nuestro push outbound — skip`);
+      return;
+    }
+
     const isNewConv = !tenant.conversations.has(jid);
     console.log(`[webhook outbound] enviando vía número '${session.numberId}'${isNewConv ? ' (conv nueva para este jid)' : ''}`);
 

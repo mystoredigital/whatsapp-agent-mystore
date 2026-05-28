@@ -710,12 +710,20 @@ export class WhatsAppSession {
     const quoteLine = quotedText ? `↪ "${quotedText.slice(0, 160)}"\n` : '';
     const body = (text || '').trim();
     const message = body ? `${quoteLine}${prefix}${body}` : `${quoteLine}${prefix}`.trim();
-    await ghl.sendInboundMessage({
+    // Outbound (NO inbound): el mensaje ya salió por Baileys; solo lo
+    // registramos en GHL como saliente nuestro. Así LeadConnector no dispara
+    // la notificación de "nuevo mensaje" para nuestras propias respuestas.
+    const resp = await ghl.sendOutboundMessage({
       contactId,
       message,
       conversationProviderId: providerId,
       attachments,
     });
+    // Red de seguridad: si GHL llegara a echar el mensaje de vuelta vía el
+    // deliveryUrl del Custom Provider, lo marcamos como "ya visto" para que
+    // /webhooks/ghl/outbound lo descarte y no reenvíe duplicado a WhatsApp.
+    const ghlMessageId = resp?.messageId || resp?.message?.id || resp?.id;
+    if (ghlMessageId) this.markOutboundSent(ghlMessageId);
   }
 
   async send(jid, text, opts = {}) {
