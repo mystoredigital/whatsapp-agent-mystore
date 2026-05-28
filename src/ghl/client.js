@@ -110,7 +110,18 @@ export class GHLClient {
     });
   }
 
-  async sendInboundMessage({ contactId, message, conversationProviderId, altId, attachments, type = 'Custom' }) {
+  // Registra un mensaje en el hilo de GHL via el Custom Conversation Provider.
+  // El nombre del endpoint dice "inbound" pero acepta un campo `direction` que
+  // controla cómo se registra:
+  //   - direction: 'inbound'  → entrante del cliente (dispara notif en LC)
+  //   - direction: 'outbound' → saliente nuestro (NO dispara notif, alineado a la derecha en GHL)
+  // Si se omite, GHL aplica el default según contexto (en práctica: inbound).
+  //
+  // Importante: el endpoint /conversations/messages/outbound NO sirve para
+  // este caso — su spec lo restringe a `type: Call` (registro de llamadas
+  // externas). Para mensajes externos saliente la única vía es este endpoint
+  // con direction='outbound'.
+  async sendInboundMessage({ contactId, message, conversationProviderId, altId, attachments, direction, type = 'Custom' }) {
     return this._req('POST', '/conversations/messages/inbound', {
       json: {
         type,
@@ -119,33 +130,7 @@ export class GHLClient {
         conversationProviderId,
         ...(altId ? { altId } : {}),
         ...(attachments && attachments.length ? { attachments } : {}),
-      },
-    });
-  }
-
-  // Registra un mensaje YA enviado externamente (por Baileys: operador desde el
-  // celular, IA, o dashboard local) en el hilo de GHL — como OUTBOUND. A
-  // diferencia de sendInboundMessage NO dispara la notificación de "nuevo
-  // mensaje" en LeadConnector (porque GHL lo trata como saliente nuestro).
-  // Endpoint: POST /conversations/messages/outbound (Add an external outbound
-  // message). No dispara el deliveryUrl del Custom Provider — el mensaje ya se
-  // envió por fuera, solo se está registrando.
-  //
-  // El endpoint exige más campos que el inbound: locationId, phone, y un
-  // messageId externo (el de WhatsApp en nuestro caso) además de
-  // contactId/message/conversationProviderId. Sin ellos GHL devuelve 400.
-  async sendOutboundMessage({ contactId, message, conversationProviderId, locationId, phone, messageId, altId, attachments, type = 'Custom' }) {
-    return this._req('POST', '/conversations/messages/outbound', {
-      json: {
-        type,
-        contactId,
-        message,
-        conversationProviderId,
-        ...(locationId ? { locationId } : {}),
-        ...(phone ? { phone } : {}),
-        ...(messageId ? { messageId } : {}),
-        ...(altId ? { altId } : {}),
-        ...(attachments && attachments.length ? { attachments } : {}),
+        ...(direction ? { direction } : {}),
       },
     });
   }

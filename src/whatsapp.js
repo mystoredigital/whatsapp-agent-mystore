@@ -711,36 +711,22 @@ export class WhatsAppSession {
     const quoteLine = quotedText ? `↪ "${quotedText.slice(0, 160)}"\n` : '';
     const body = (text || '').trim();
     const message = body ? `${quoteLine}${prefix}${body}` : `${quoteLine}${prefix}`.trim();
-    // Intentamos OUTBOUND (no dispara notificación en LeadConnector). Si el
-    // endpoint /conversations/messages/outbound falla (schema, permisos,
-    // disponibilidad), fallback a INBOUND para garantizar que el mensaje
-    // queda registrado en GHL — preferimos "notifica pero aparece" antes que
-    // "no aparece en GHL". El error se loguea con stack para diagnóstico.
-    const basePayload = {
+    // Mismo endpoint que para mensajes del cliente (/conversations/messages/inbound)
+    // pero con direction='outbound' — así GHL lo registra como saliente nuestro,
+    // sin disparar notificación de "nuevo mensaje" en LeadConnector mobile.
+    const resp = await ghl.sendInboundMessage({
       contactId,
       message,
       conversationProviderId: providerId,
       attachments,
-    };
-    let resp;
-    try {
-      resp = await ghl.sendOutboundMessage({
-        ...basePayload,
-        // Campos extra que el endpoint outbound exige (a diferencia del inbound):
-        locationId: this.store.ghl.locationId,
-        phone,
-        ...(messageId ? { messageId: `wa:${messageId}` } : {}),
-      });
-      // Red de seguridad: si GHL eco-disparara el deliveryUrl con este msg,
-      // /webhooks/ghl/outbound lo descarta y no se reenvía duplicado a WA.
-      const ghlMessageId = resp?.messageId || resp?.message?.id || resp?.id;
-      if (ghlMessageId) this.markOutboundSent(ghlMessageId);
-    } catch (e) {
-      console.error(`[ghl:${this.store.tenantId}] OUTBOUND endpoint falló — fallback a INBOUND. Error: ${e.message}`);
-      // Fallback: el endpoint outbound no funcionó. Usamos inbound para que
-      // el mensaje al menos aparezca en GHL (al costo de notif. en LeadConnector).
-      resp = await ghl.sendInboundMessage(basePayload);
-    }
+      direction: 'outbound',
+      ...(messageId ? { altId: `wa-out:${messageId}` } : {}),
+    });
+    // Red de seguridad: si GHL eco-disparara el deliveryUrl del Custom
+    // Provider con este msg, /webhooks/ghl/outbound lo descarta y no se
+    // reenvía duplicado a WhatsApp.
+    const ghlMessageId = resp?.messageId || resp?.message?.id || resp?.id;
+    if (ghlMessageId) this.markOutboundSent(ghlMessageId);
   }
 
   async send(jid, text, opts = {}) {
