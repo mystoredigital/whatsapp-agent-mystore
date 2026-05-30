@@ -101,14 +101,69 @@ function unwrapMessage(message) {
 function extractText(rawMessage) {
   const message = unwrapMessage(rawMessage);
   if (!message) return '';
-  return (
+
+  // 1) Texto plano y captions clásicos
+  const classic =
     message.conversation ||
     message.extendedTextMessage?.text ||
     message.imageMessage?.caption ||
     message.videoMessage?.caption ||
     message.documentMessage?.caption ||
-    ''
-  );
+    '';
+  if (classic) return classic;
+
+  // 2) Mensajes con botones (bots viejos: "Tu código es 8432 [Verificar]")
+  //    Concatenamos contentText + footerText cuando ambos existen.
+  if (message.buttonsMessage) {
+    const b = message.buttonsMessage;
+    const parts = [b.contentText, b.footerText].filter(Boolean);
+    if (parts.length) return parts.join('\n');
+  }
+
+  // 3) Listas con menú de opciones (bots con submenús)
+  if (message.listMessage) {
+    const l = message.listMessage;
+    const parts = [l.description || l.title, l.footerText].filter(Boolean);
+    if (parts.length) return parts.join('\n');
+  }
+
+  // 4) Plantillas (WhatsApp Business / templates pre-aprobados)
+  if (message.templateMessage?.hydratedTemplate) {
+    const t = message.templateMessage.hydratedTemplate;
+    const body = t.hydratedContentText || t.hydratedTitleText || '';
+    const footer = t.hydratedFooterText || '';
+    const combined = [body, footer].filter(Boolean).join('\n');
+    if (combined) return combined;
+  }
+
+  // 5) Interactive (WhatsApp Cloud API moderno: 2024+). Estructura nueva
+  //    con body/header/footer tipados. Los bots de verificación nuevos
+  //    suelen usar esto.
+  if (message.interactiveMessage) {
+    const i = message.interactiveMessage;
+    const parts = [
+      i.header?.title,
+      i.body?.text,
+      i.footer?.text,
+    ].filter(Boolean);
+    if (parts.length) return parts.join('\n');
+  }
+
+  // 6) Respuestas a botones / listas (cuando el contacto toca un botón).
+  //    El bot recibe selectedDisplayText / selectedButtonId; el operador
+  //    debería ver al menos el texto que el contacto eligió.
+  if (message.buttonsResponseMessage?.selectedDisplayText) {
+    return message.buttonsResponseMessage.selectedDisplayText;
+  }
+  if (message.templateButtonReplyMessage?.selectedDisplayText) {
+    return message.templateButtonReplyMessage.selectedDisplayText;
+  }
+  if (message.listResponseMessage?.title) {
+    const r = message.listResponseMessage;
+    return [r.title, r.singleSelectReply?.selectedRowId].filter(Boolean).join(' · ');
+  }
+
+  return '';
 }
 
 // Detecta si el mensaje cita a otro (reply). Devuelve null si no hay quote.
@@ -355,7 +410,13 @@ export class WhatsAppSession {
     });
 
     this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
+      // 'notify': mensajes en tiempo real. 'append': historial reciente que
+      // llega cuando Baileys reconecta tras un blip — sin esto perderíamos
+      // todo lo que el contacto envió mientras el socket estaba caído (típico
+      // caso: código de verificación llegó justo durante una desconexión).
+      // 'prepend': sync inicial de mensajes viejos al primer login — eso sí
+      // lo saltamos para no inundar la bandeja con histórico.
+      if (type !== 'notify' && type !== 'append') return;
       for (const m of messages) {
         await this._handleIncoming(m).catch((e) =>
           console.error(`[wa:${this.store.tenantId}] handle`, e.message)
@@ -467,9 +528,17 @@ export class WhatsAppSession {
         return null;
       });
     } else if (!mediaInfo && !text.trim()) {
-      // Diagnóstico: ningún tipo conocido — log las keys top-level para descubrir wrappers nuevos
+      // Diagnóstico: ningún tipo conocido — log con detalle para descubrir
+      // wrappers nuevos (WhatsApp añade tipos cada par de meses). Incluimos
+      // remitente y un sample del payload para que sea trivial diagnosticar.
       const inner = unwrapMessage(msg.message);
-      console.log(`[wa:${this.store.tenantId}] mensaje sin tipo conocido. raw keys: ${Object.keys(msg.message || {})} · unwrapped keys: ${Object.keys(inner || {})}`);
+      const stub = msg.messageStubType ? ` stub=${msg.messageStubType}` : '';
+      const sample = JSON.stringify(inner || {}).slice(0, 300);
+      console.log(
+        `[wa:${this.store.tenantId}] mensaje sin tipo conocido${stub} ` +
+        `from=${msg.pushName || jid} raw=${Object.keys(msg.message || {})} ` +
+        `unwrapped=${Object.keys(inner || {})} sample=${sample}`
+      );
     }
 
     // Si no hay texto y tampoco se logró subir media → ignora (mensajes solo-sticker con upload fallido)
