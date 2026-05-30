@@ -7,6 +7,11 @@ import swaggerUi from 'swagger-ui-express';
 import { openapiSpec } from './openapi.js';
 import { logAudit, listAudit, actorFrom } from './audit.js';
 import { createKey, listKeys, revokeKey, verifyToken } from './apiKeys.js';
+import {
+  createUser, listUsers, verifyCredentials, setPassword, disableUser, enableUser,
+  hasAnyUsers, generatePassword,
+  signDashboardSession, verifyDashboardSession, DASHBOARD_SESSION_COOKIE,
+} from './users.js';
 import { createWebhook, listWebhooks, revokeWebhook, dispatch as dispatchWebhook, WEBHOOK_EVENTS } from './webhooks.js';
 import { computeStats } from './stats.js';
 import { tenants } from './tenants.js';
@@ -143,6 +148,10 @@ async function authMiddleware(req, res, next) {
     req.path === '/api/docs/' ||
     req.path.startsWith('/api/docs/') ||
     req.path === '/api/docs.json' ||
+    // Login UI + endpoint: deben ser accesibles sin auth previa
+    req.path === '/login' ||
+    req.path === '/login.html' ||
+    req.path === '/api/login' ||
     // Favicon/PWA assets: el navegador los pide antes de tener auth — bypass
     /^\/(favicon\.ico|favicon-\d+x\d+\.png|apple-touch-icon\.png|android-chrome-\d+x\d+\.png|site\.webmanifest)$/.test(req.path)
   ) return next();
@@ -170,17 +179,47 @@ async function authMiddleware(req, res, next) {
     }
   }
 
-  // 3) Basic auth
-  const user = process.env.DASHBOARD_USER;
-  const pass = process.env.DASHBOARD_PASS;
-  if (!user || !pass) return next();
-  const [scheme, encoded] = header.split(' ');
-  if (scheme === 'Basic' && encoded) {
-    const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
-    if (u === user && p === pass) return next();
+  // 3) Dashboard session cookie (login UI). Fija req.dashboardSession con
+  // {username, role, tenantId}. Para role='client' el getTenant fuerza el
+  // scope al tenantId — el cliente no ve ni puede tocar otros tenants.
+  const dashCookie = req.cookies?.[DASHBOARD_SESSION_COOKIE];
+  if (dashCookie) {
+    const session = verifyDashboardSession(dashCookie);
+    if (session) {
+      req.dashboardSession = session;
+      return next();
+    }
   }
-  res.set('WWW-Authenticate', 'Basic realm="MyStore Agent"');
-  res.status(401).send('Auth required');
+
+  // 4) Back-door perpetua via Basic auth con DASHBOARD_USER/PASS (env vars).
+  // Siempre admin. Garantiza que el operador NUNCA queda afuera del sistema
+  // aunque pierda el password de su user formal en data/users.json. Esto
+  // requiere acceso al .env del VPS, así que no compromete seguridad real.
+  const envUser = process.env.DASHBOARD_USER;
+  const envPass = process.env.DASHBOARD_PASS;
+  if (envUser && envPass) {
+    const [scheme, encoded] = header.split(' ');
+    if (scheme === 'Basic' && encoded) {
+      const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
+      if (u === envUser && p === envPass) {
+        req.dashboardSession = { username: u, role: 'admin', tenantId: null, envFallback: true };
+        return next();
+      }
+    }
+  }
+
+  // 5) Sin auth y sin usuarios todavía: modo dev/local — dejamos pasar para
+  // que el operador pueda configurar el primer admin via la UI.
+  const noUsers = !(await hasAnyUsers());
+  if (noUsers && !envUser) return next();
+
+  // 6) Hay usuarios formales pero ninguno autenticado → redirigir a /login
+  // (UI) o 401 JSON (API). Para clientes API mal configurados queremos
+  // 401 explícito, no redirect.
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'no autenticado', loginUrl: '/login.html' });
+  }
+  return res.redirect(`/login.html?next=${encodeURIComponent(req.originalUrl || '/')}`);
 }
 
 function getTenant(req) {
@@ -196,10 +235,30 @@ function getTenant(req) {
     if (!t) throw Object.assign(new Error(`Tenant ${req.apiKey.tenantId} no existe`), { status: 404 });
     return t;
   }
+  // Login session de cliente (role='client'): tenant forzado a su tenantId.
+  // Si el cliente intenta pasar ?tenant=otro, lo ignoramos silenciosamente.
+  if (req.dashboardSession?.role === 'client' && req.dashboardSession?.tenantId) {
+    const t = tenants.get(req.dashboardSession.tenantId);
+    if (!t) throw Object.assign(new Error(`Tenant ${req.dashboardSession.tenantId} no existe`), { status: 404 });
+    return t;
+  }
   const id = req.query.tenant || req.body?.tenant || '_local';
   const t = tenants.get(id);
   if (!t) throw Object.assign(new Error(`Tenant ${id} no existe`), { status: 404 });
   return t;
+}
+
+// True si el request es de un admin (login session con role=admin, o
+// bootstrap legacy, o API key sin scope — los embed siempre son client-equiv).
+function isAdmin(req) {
+  if (req.dashboardSession?.role === 'admin') return true;
+  return false;
+}
+
+// Guard para endpoints que requieren admin (gestión de usuarios, etc).
+function requireAdmin(req, res, next) {
+  if (isAdmin(req)) return next();
+  return res.status(403).json({ error: 'requiere rol admin' });
 }
 
 function escapeHtml(s) {
@@ -330,8 +389,105 @@ export function startServer(port = 3000) {
 
   // Servir /embed sin extensión
   app.get('/embed', (_req, res) => res.sendFile(path.resolve('./public/embed.html')));
+  // /login alias para /login.html (más natural en URL)
+  app.get('/login', (_req, res) => res.sendFile(path.resolve('./public/login.html')));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, tenants: tenants.list().length }));
+
+  // ---------- Sesiones del dashboard ----------
+  // POST /api/login → recibe {username, password}, valida con users.js, emite cookie
+  // firmada dashboard_session (12h). Cliente UI lo llama desde login.html.
+  app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body || {};
+    if (!username || !password) return res.status(400).json({ error: 'username y password requeridos' });
+    const user = await verifyCredentials(username, password);
+    if (!user) {
+      // Pequeño delay para frenar brute-force (no perfecto, pero ayuda).
+      await new Promise((r) => setTimeout(r, 300));
+      return res.status(401).json({ error: 'credenciales inválidas' });
+    }
+    const cookie = signDashboardSession({
+      username: user.username, role: user.role, tenantId: user.tenantId,
+    });
+    res.cookie(DASHBOARD_SESSION_COOKIE, cookie, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+      maxAge: 12 * 60 * 60 * 1000,
+      path: '/',
+    });
+    res.json({ ok: true, user: { username: user.username, role: user.role, tenantId: user.tenantId } });
+  });
+
+  app.post('/api/logout', (req, res) => {
+    res.clearCookie(DASHBOARD_SESSION_COOKIE, { path: '/' });
+    res.json({ ok: true });
+  });
+
+  // Quién está logueado. UI lo llama al boot para saber si redirigir a login y
+  // ajustar la vista (ocultar tenant selector si role=client, etc.).
+  app.get('/api/me', (req, res) => {
+    if (req.dashboardSession) {
+      return res.json({
+        username: req.dashboardSession.username,
+        role: req.dashboardSession.role,
+        tenantId: req.dashboardSession.tenantId,
+        bootstrap: !!req.dashboardSession.bootstrap,
+      });
+    }
+    if (req.embedLocationId) return res.json({ via: 'embed', tenantId: req.embedLocationId, role: 'client' });
+    if (req.apiKey) return res.json({ via: 'api-key', tenantId: req.apiKey.tenantId, role: 'client', label: req.apiKey.label });
+    return res.status(401).json({ error: 'no autenticado' });
+  });
+
+  // ---------- CRUD de usuarios (solo admin) ----------
+  app.get('/api/users', requireAdmin, async (_req, res) => {
+    try { res.json({ users: await listUsers() }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/users', requireAdmin, async (req, res) => {
+    try {
+      const { username, role, tenantId } = req.body || {};
+      let { password } = req.body || {};
+      // Validar que el tenantId existe (evita typos del admin que dejarían al
+      // cliente sin poder loguearse — getTenant tiraría 404 al iniciar)
+      if (role === 'client' && tenantId && !tenants.get(tenantId)) {
+        return res.status(400).json({ error: `tenant '${tenantId}' no existe` });
+      }
+      // Si no se pasó password, generamos uno y lo devolvemos UNA vez.
+      const generated = !password;
+      if (generated) password = generatePassword();
+      const user = await createUser({ username, password, role, tenantId });
+      res.status(201).json({
+        user,
+        // El password sólo se devuelve en la creación. El admin debe copiarlo y
+        // pasarlo al cliente — no se puede recuperar después.
+        password,
+        generated,
+      });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.post('/api/users/:username/password', requireAdmin, async (req, res) => {
+    try {
+      let { password } = req.body || {};
+      const generated = !password;
+      if (generated) password = generatePassword();
+      await setPassword(req.params.username, password);
+      res.json({ ok: true, password, generated });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.post('/api/users/:username/disable', requireAdmin, async (req, res) => {
+    try { const ok = await disableUser(req.params.username); res.json({ ok }); }
+    catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  app.post('/api/users/:username/enable', requireAdmin, async (req, res) => {
+    try { const ok = await enableUser(req.params.username); res.json({ ok }); }
+    catch (e) { res.status(400).json({ error: e.message }); }
+  });
 
   // OpenAPI spec + Swagger UI — públicos, sin auth (no exponen datos del tenant)
   app.get('/api/docs.json', (_req, res) => res.json(openapiSpec));
@@ -344,7 +500,15 @@ export function startServer(port = 3000) {
     }),
   );
 
-  app.get('/api/tenants', (_req, res) => res.json({ tenants: tenants.list() }));
+  app.get('/api/tenants', (req, res) => {
+    const all = tenants.list();
+    // Para clientes, solo devolvemos su tenant. Para admin (o backwards-compat
+    // sin login), todos. Esto hace que el selector del UI muestre solo lo permitido.
+    if (req.dashboardSession?.role === 'client' && req.dashboardSession?.tenantId) {
+      return res.json({ tenants: all.filter((t) => t.tenantId === req.dashboardSession.tenantId) });
+    }
+    res.json({ tenants: all });
+  });
 
   app.get('/api/state', (req, res) => {
     try {

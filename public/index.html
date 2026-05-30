@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260527m" />
+<link rel="stylesheet" href="/style.css?v=20260529n" />
 </head>
 <body>
 <div class="app">
@@ -56,6 +56,15 @@
     </button>
   </div>
 
+  <!-- Sección admin: visible solo cuando role=admin. JS oculta esta clase
+       para clientes (data-admin-only). -->
+  <div class="nav-section" data-admin-only>
+    <div class="nav-title">Administración</div>
+    <button class="nav-item" data-view="users" type="button">
+      <span class="nav-icon">🧑‍💼</span><span>Usuarios</span>
+    </button>
+  </div>
+
   <div class="nav-footer">
     <div class="nav-footer-line" id="navStatus">conectando…</div>
   </div>
@@ -75,6 +84,15 @@
     <input type="checkbox" id="aiGlobalToggle" />
     <span id="aiGlobalLabel">Modo humano global</span>
   </label>
+  <!-- User widget — render dinámico desde app.js tras /api/me -->
+  <span id="userChip" class="user-chip hidden">
+    <span class="avatar" id="userAvatar">?</span>
+    <span>
+      <span class="user-name" id="userName"></span>
+      <span class="user-role" id="userRole"></span>
+    </span>
+    <button id="userLogout" class="logout" title="Cerrar sesión" type="button">⎋</button>
+  </span>
 </header>
 
 <!-- Disparadores ocultos: el nav-item dispara su .click() y reusa toda la logica
@@ -87,6 +105,7 @@
   <button id="btnApiKeys"></button>
   <button id="btnWebhooks"></button>
   <button id="btnPrompt"></button>
+  <button id="btnUsers"></button>
 </div>
 
 <main class="layout">
@@ -233,6 +252,43 @@
   </div>
 </div>
 
+<div id="usersModal" class="modal hidden">
+  <div class="modal-body large">
+    <h3>Usuarios del dashboard</h3>
+    <p style="color:#8899a6;font-size:13px;margin-top:0">Cuentas que pueden ingresar al dashboard vía <code>/login</code>. <strong>admin</strong> ve todos los tenants; <strong>client</strong> queda scoped a su location. El password solo se muestra al crear o resetear — copialo y pasáselo al cliente por canal seguro.</p>
+
+    <div class="new-user-form">
+      <label>Username
+        <input type="text" id="newUserName" placeholder="ej: rubberfit" maxlength="32" autocomplete="off" />
+      </label>
+      <label>Rol
+        <select id="newUserRole">
+          <option value="client">client (scoped)</option>
+          <option value="admin">admin (todos los tenants)</option>
+        </select>
+      </label>
+      <label>Tenant
+        <select id="newUserTenant"></select>
+      </label>
+      <button id="usersCreate" class="btn primary">Crear</button>
+    </div>
+
+    <div id="newUserResult" class="password-banner hidden">
+      <div class="pw-label">⚠ Password generado (se muestra una sola vez)</div>
+      <div class="pw-value" id="newUserPassword"></div>
+      <div class="pw-hint">Copialo ahora. No vuelve a aparecer — si se pierde, se debe resetear.</div>
+    </div>
+
+    <div id="usersList" class="users-grid">
+      <div class="empty">Cargando…</div>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button id="usersClose" class="btn">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="auditModal" class="modal hidden">
   <div class="modal-body large">
     <h3>Audit log</h3>
@@ -309,6 +365,6 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app.js?v=20260527m"></script>
+<script src="/app.js?v=20260529n"></script>
 </body>
 </html>

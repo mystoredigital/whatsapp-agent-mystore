@@ -17,6 +17,7 @@ const state = {
   activeJid: null,
   searchQuery: '',
   replyContext: null, // { stanzaId, text, mediaType, senderName }
+  user: null, // {username, role, tenantId, bootstrap} — null mientras /api/me no responde
 };
 
 const $ = (id) => document.getElementById(id);
@@ -106,6 +107,7 @@ const NAV_VIEW_TO_BTN = {
   prompt: 'btnPrompt',
   apikeys: 'btnApiKeys',
   webhooks: 'btnWebhooks',
+  users: 'btnUsers',
 };
 const NAV_VIEW_TO_MODAL = {
   stats: 'statsModal',
@@ -115,6 +117,7 @@ const NAV_VIEW_TO_MODAL = {
   prompt: 'promptModal',
   apikeys: 'apiKeysModal',
   webhooks: 'webhooksModal',
+  users: 'usersModal',
 };
 function setActiveNav(view) {
   document.querySelectorAll('.nav-item').forEach((el) => {
@@ -146,6 +149,65 @@ function wireNav() {
   document.querySelectorAll('.modal').forEach((m) => observer.observe(m, { attributes: true, attributeFilter: ['class'] }));
 }
 wireNav();
+
+// ---------- Auth boot ----------
+// Llama a /api/me al cargar. Si 401, redirige a /login.html. Si OK, popula
+// state.user, renderiza el user chip y ajusta la UI según el rol:
+//   - role=client → oculta tenant selector + secciones admin-only
+//   - role=admin  → vista completa, igual que el modo anterior
+// En embed mode (iframe en GHL) NO se hace el boot — la sesión la maneja el SSO de GHL.
+async function bootAuth() {
+  if (EMBED) return; // embed tiene su propia sesión via cookie embed_session
+  try {
+    const res = await fetch('/api/me');
+    if (res.status === 401) {
+      const next = encodeURIComponent(location.pathname + location.search);
+      location.href = `/login.html?next=${next}`;
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.user = await res.json();
+    renderUserChip();
+    applyRoleVisibility();
+  } catch (e) {
+    console.warn('[auth] /api/me falló:', e.message);
+    // No redirigimos en error de red — dejamos que el resto del app intente
+    // y muestre su propio error. Evita loops de redirect si el server cae.
+  }
+}
+
+function renderUserChip() {
+  const chip = $('userChip');
+  if (!chip || !state.user) return;
+  const u = state.user;
+  $('userAvatar').textContent = (u.username || '?').slice(0, 1);
+  $('userName').textContent = u.username || '';
+  $('userRole').textContent = u.role === 'admin' ? 'admin' : (u.tenantId ? `client · ${u.tenantId.slice(0, 8)}…` : 'client');
+  chip.classList.remove('hidden');
+}
+
+function applyRoleVisibility() {
+  if (!state.user) return;
+  const isClient = state.user.role === 'client';
+  // Ocultar selector de tenant para clientes — su tenant queda fijo
+  if (isClient) {
+    const sel = $('tenantSelect');
+    if (sel) sel.style.display = 'none';
+  }
+  // Ocultar secciones marcadas como admin-only
+  document.querySelectorAll('[data-admin-only]').forEach((el) => {
+    el.style.display = state.user.role === 'admin' ? '' : 'none';
+  });
+}
+
+async function doLogout() {
+  try {
+    await fetch('/api/logout', { method: 'POST' });
+  } catch (_) { /* igual redirigimos */ }
+  location.href = '/login.html';
+}
+
+bootAuth();
 
 async function relink() {
   if (!confirm('Cerrar la sesión actual y generar un QR nuevo?')) return;
@@ -640,6 +702,124 @@ async function createApiKey() {
     $('newKeyLabel').value = '';
     await loadApiKeys();
   } finally { btn.disabled = false; }
+}
+
+// ---------- Usuarios (admin only) ----------
+
+async function openUsersModal() {
+  $('usersModal').classList.remove('hidden');
+  $('newUserResult').classList.add('hidden');
+  $('newUserName').value = '';
+  // Llenar dropdown de tenants
+  const tenantSel = $('newUserTenant');
+  tenantSel.innerHTML = '';
+  for (const t of state.tenants) {
+    const opt = document.createElement('option');
+    opt.value = t.tenantId;
+    opt.textContent = t.tenantId === '_local' ? 'Local (sin GHL)' : `${t.tenantId.slice(0, 16)}…`;
+    tenantSel.appendChild(opt);
+  }
+  // El select solo aplica si role=client — para role=admin se ignora
+  syncNewUserTenantVisibility();
+  await loadUsers();
+}
+
+function syncNewUserTenantVisibility() {
+  const role = $('newUserRole').value;
+  const tenantWrap = $('newUserTenant').parentElement; // el <label>
+  tenantWrap.style.opacity = role === 'client' ? '1' : '0.4';
+  $('newUserTenant').disabled = role !== 'client';
+}
+
+async function loadUsers() {
+  const list = $('usersList');
+  list.innerHTML = '<div class="empty">Cargando…</div>';
+  try {
+    const r = await fetch('/api/users');
+    const data = await r.json();
+    if (!r.ok) {
+      list.innerHTML = `<div class="empty">Error: ${escapeHtml(data.error || r.status)}</div>`;
+      return;
+    }
+    const users = data.users || [];
+    if (!users.length) {
+      list.innerHTML = '<div class="empty">No hay usuarios todavía. Crea el primero arriba.</div>';
+      return;
+    }
+    list.innerHTML = users.map(renderUserRow).join('');
+  } catch (e) {
+    list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderUserRow(u) {
+  const disabled = !!u.disabledAt;
+  const tenant = u.tenantId ? `<code>${escapeHtml(u.tenantId)}</code>` : '<span style="color:#5b6b7a">(todos)</span>';
+  const lastLogin = u.lastLoginAt
+    ? new Date(u.lastLoginAt).toLocaleString()
+    : 'nunca';
+  const created = new Date(u.createdAt).toLocaleDateString();
+  const isMe = state.user && state.user.username === u.username;
+  // No permitir deshabilitarte a vos mismo (te quedarías fuera)
+  const toggleBtn = isMe
+    ? ''
+    : (disabled
+        ? `<button class="btn-sm" data-user-action="enable" data-user="${escapeHtml(u.username)}">Reactivar</button>`
+        : `<button class="btn-sm warn" data-user-action="disable" data-user="${escapeHtml(u.username)}">Deshabilitar</button>`);
+  return `<div class="user-row ${disabled ? 'disabled' : ''}">
+    <div class="uname">${escapeHtml(u.username)}${isMe ? ' <span style="color:#5b6b7a;font-weight:400">(tú)</span>' : ''}</div>
+    <div><span class="urole ${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></div>
+    <div class="utenant">${tenant}</div>
+    <div class="umeta">creado ${escapeHtml(created)} · último login ${escapeHtml(lastLogin)}</div>
+    <div class="uactions">
+      <button class="btn-sm" data-user-action="reset-pw" data-user="${escapeHtml(u.username)}">Reset pw</button>
+      ${toggleBtn}
+    </div>
+  </div>`;
+}
+
+async function createUser() {
+  const username = $('newUserName').value.trim();
+  const role = $('newUserRole').value;
+  const tenantId = role === 'client' ? $('newUserTenant').value : null;
+  if (!username) { alert('username requerido'); return; }
+  if (role === 'client' && !tenantId) { alert('elegí un tenant para el rol client'); return; }
+  const btn = $('usersCreate');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, role, tenantId }),
+    });
+    const data = await r.json();
+    if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+    $('newUserPassword').textContent = data.password;
+    $('newUserResult').classList.remove('hidden');
+    $('newUserName').value = '';
+    await loadUsers();
+  } finally { btn.disabled = false; }
+}
+
+async function resetUserPassword(username) {
+  if (!confirm(`Generar nuevo password para "${username}"? El anterior dejará de funcionar.`)) return;
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(username)}/password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await r.json();
+    if (!r.ok) { alert('Error: ' + (data.error || r.status)); return; }
+    $('newUserPassword').textContent = data.password;
+    $('newUserResult').classList.remove('hidden');
+    await loadUsers();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function toggleUserDisabled(username, action) {
+  const path = action === 'enable' ? 'enable' : 'disable';
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(username)}/${path}`, { method: 'POST' });
+    if (!r.ok) { const data = await r.json().catch(() => ({})); alert('Error: ' + (data.error || r.status)); return; }
+    await loadUsers();
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 async function addNumber() {
@@ -1207,6 +1387,23 @@ on('auditType', 'change', loadAudit);
 on('btnApiKeys', 'click', openApiKeysModal);
 on('apiKeysClose', 'click', () => $('apiKeysModal').classList.add('hidden'));
 on('apiKeysCreate', 'click', createApiKey);
+
+// Usuarios (admin only — el server protege con requireAdmin, el UI esconde la nav-item)
+on('btnUsers', 'click', openUsersModal);
+on('usersClose', 'click', () => $('usersModal').classList.add('hidden'));
+on('usersCreate', 'click', createUser);
+on('newUserRole', 'change', syncNewUserTenantVisibility);
+on('usersList', 'click', (e) => {
+  const btn = e.target.closest('[data-user-action]');
+  if (!btn) return;
+  const username = btn.dataset.user;
+  const action = btn.dataset.userAction;
+  if (action === 'reset-pw') return resetUserPassword(username);
+  if (action === 'disable' || action === 'enable') return toggleUserDisabled(username, action);
+});
+
+// Logout desde el user chip
+on('userLogout', 'click', doLogout);
 
 // Cierre del modal QR — recuerda el data URL descartado para no reabrirlo mientras
 // Baileys siga emitiendo el mismo QR. Al regenerarse (cada ~20-60s), se vuelve a mostrar.

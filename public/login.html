@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Login · WhatsApp Agent · My Store</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+<link rel="stylesheet" href="/style.css?v=20260529n" />
+</head>
+<body class="login-body">
+<main class="login-shell">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-title">WhatsApp Agent</div>
+      <div class="login-sub">My Store Digital</div>
+    </div>
+    <form id="loginForm" class="login-form" autocomplete="on">
+      <label class="login-field">
+        <span>Usuario</span>
+        <input type="text" id="username" name="username" autocomplete="username" required autofocus />
+      </label>
+      <label class="login-field">
+        <span>Contraseña</span>
+        <input type="password" id="password" name="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit" id="loginSubmit" class="btn primary login-submit">Ingresar</button>
+      <div id="loginError" class="login-error hidden"></div>
+    </form>
+    <div class="login-footer">Sesión válida 12 horas.</div>
+  </div>
+</main>
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const next = params.get('next') || '/';
+  const form = document.getElementById('loginForm');
+  const errBox = document.getElementById('loginError');
+  const submit = document.getElementById('loginSubmit');
+
+  function showError(msg) {
+    errBox.textContent = msg;
+    errBox.classList.remove('hidden');
+  }
+  function clearError() { errBox.classList.add('hidden'); }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearError();
+    submit.disabled = true;
+    submit.textContent = 'Ingresando…';
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      // Redirigir a la URL pretendida (o home)
+      location.href = next.startsWith('/') ? next : '/';
+    } catch (err) {
+      showError(err.message || 'Error al iniciar sesión');
+      submit.disabled = false;
+      submit.textContent = 'Ingresar';
+    }
+  });
+})();
+</script>
+</body>
+</html>
