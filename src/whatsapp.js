@@ -28,6 +28,13 @@ const QUIET_HOURS_END = Number(process.env.QUIET_HOURS_END ?? 7);
 const QUIET_HOURS_TZ = process.env.TIMEZONE || 'America/Guayaquil';
 const NEW_CONTACT_REQUIRES_HUMAN = (process.env.NEW_CONTACT_REQUIRES_HUMAN || 'false') === 'true';
 
+// Flujo aislado "odoopago": mensajes que empiezan con esta keyword se reenvían a un
+// webhook de n8n en vez de pasar por la IA conversacional. URL opcional: si no está
+// definida, el branch se desactiva y el mensaje sigue el flujo normal.
+const ODOOPAGO_KEYWORD = 'odoopago';
+const N8N_ODOOPAGO_WEBHOOK_URL = process.env.N8N_ODOOPAGO_WEBHOOK_URL;
+const ODOOPAGO_TIMEOUT_MS = Number(process.env.N8N_ODOOPAGO_TIMEOUT_MS ?? 30000);
+
 const RECONNECT_BASE_MS = 3000;
 const RECONNECT_MAX_MS = 60_000;
 
@@ -505,6 +512,23 @@ export class WhatsAppSession {
     // Resolver teléfono real (manejando LID mode) — null para grupos
     const resolved = isGroup ? null : resolvePhoneAndJid(msg);
 
+    // Flujo aislado "odoopago": si un mensaje 1:1 empieza con la keyword, lo desviamos
+    // al webhook de n8n y cortamos el flujo (no IA, no storage, no GHL/Calendar).
+    // Si la env var no está configurada, lo dejamos pasar al flujo normal (sin romper).
+    if (!isGroup && text.trim().toLowerCase().startsWith(ODOOPAGO_KEYWORD)) {
+      if (!N8N_ODOOPAGO_WEBHOOK_URL) {
+        console.warn(
+          `[odoopago:${this.store.tenantId}] N8N_ODOOPAGO_WEBHOOK_URL no configurada — ` +
+          `mensaje sigue el flujo normal`
+        );
+      } else {
+        await this._handleOdooPago(msg, { jid, text, resolved }).catch((e) =>
+          console.error(`[odoopago:${this.store.tenantId}]`, e.message)
+        );
+        return;
+      }
+    }
+
     // Anti-duplicación 1:1: si ya tenemos un canónico para este teléfono y es distinto
     // del jid actual, redirigimos. Para grupos no aplica (cada grupo es su propio jid).
     const canonical = isGroup ? null : this.store.canonicalJidForPhone(resolved?.phone);
@@ -672,6 +696,74 @@ export class WhatsAppSession {
       console.error(`[ai:${this.store.tenantId}]`, e.message);
       this.store.addMessage(jid, { role: 'system', text: `Error IA: ${e.message}` });
     }
+  }
+
+  // Flujo "odoopago": reenvía el mensaje (texto + imagen opcional) a un webhook de n8n
+  // y responde al usuario con la confirmación que devuelva. Aislado del flujo de IA.
+  async _handleOdooPago(msg, { jid, text, resolved }) {
+    // Texto sin la keyword del inicio (preserva mayúsculas del resto).
+    const trimmed = text.trim();
+    const texto = trimmed.slice(ODOOPAGO_KEYWORD.length).trim();
+
+    // Imagen adjunta → base64 (solo type image; ignoramos otros tipos de media aquí).
+    let imagenBase64 = null;
+    let imagenMimetype = null;
+    const mediaInfo = extractMediaInfo(msg.message);
+    if (mediaInfo?.type === 'image') {
+      try {
+        const unwrappedMsg = { key: msg.key, message: unwrapMessage(msg.message) };
+        const buffer = await downloadMediaMessage(unwrappedMsg, 'buffer', {}, { logger });
+        if (buffer?.length) {
+          imagenBase64 = buffer.toString('base64');
+          imagenMimetype = mediaInfo.mimetype;
+        }
+      } catch (e) {
+        console.error(`[odoopago:${this.store.tenantId}] descarga imagen falló: ${e.message}`);
+      }
+    }
+
+    const tieneImagen = !!imagenBase64;
+    const tsSeconds = Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
+    const payload = {
+      texto,
+      telefono_remitente: resolved?.phone || jidToPhone(jid) || jid,
+      nombre_remitente: msg.pushName || resolved?.phone || null,
+      fecha_mensaje: new Date(tsSeconds * 1000).toISOString(),
+      tiene_imagen: tieneImagen,
+      imagen_base64: imagenBase64,
+      imagen_mimetype: imagenMimetype,
+    };
+
+    console.log(
+      `[odoopago:${this.store.tenantId}] detectado de ${payload.telefono_remitente} | ` +
+      `imagen=${tieneImagen} | texto="${texto.slice(0, 120)}"`
+    );
+
+    let confirmacion = 'No pude registrar el pago en este momento, inténtalo de nuevo en unos minutos.';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ODOOPAGO_TIMEOUT_MS);
+    try {
+      const resp = await fetch(N8N_ODOOPAGO_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      console.log(`[odoopago:${this.store.tenantId}] webhook status=${resp.status}`);
+      if (resp.ok) {
+        const data = await resp.json().catch(() => null);
+        if (data?.mensaje_confirmacion) confirmacion = String(data.mensaje_confirmacion);
+      }
+    } catch (e) {
+      const reason = e.name === 'AbortError' ? `timeout (${ODOOPAGO_TIMEOUT_MS}ms)` : e.message;
+      console.error(`[odoopago:${this.store.tenantId}] webhook falló: ${reason}`);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const sent = await this.sock.sendMessage(jid, { text: confirmacion });
+    this._rememberSentByUs(sent?.key?.id);
+    this._touchActivity();
   }
 
   // Descarga la media del mensaje Baileys y la sube a R2.
