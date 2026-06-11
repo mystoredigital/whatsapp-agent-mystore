@@ -68,6 +68,9 @@ services:
       WHISPER_URL: ${WHISPER_URL}
       WHISPER_MODEL: ${WHISPER_MODEL}
       WHISPER_LANGUAGE: ${WHISPER_LANGUAGE}
+      # Flujo odoopago -> webhook n8n
+      N8N_ODOOPAGO_WEBHOOK_URL: ${N8N_ODOOPAGO_WEBHOOK_URL}
+      N8N_ODOOPAGO_TIMEOUT_MS: ${N8N_ODOOPAGO_TIMEOUT_MS}
     labels:
       - traefik.enable=true
       - traefik.http.routers.whatsapp-agent-mystore.entrypoints=websecure
