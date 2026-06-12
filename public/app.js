@@ -1328,6 +1328,10 @@ async function stopAndSendVoice() {
   if (!_voice.recorder) return;
   const recorder = _voice.recorder;
   const mime = _voice.mimeType || recorder.mimeType || 'audio/webm';
+  // Duración exacta de la grabación — calculada acá, no estimada en server.
+  // Sin esto WhatsApp invalida el media PTT con "audio ya no disponible".
+  const durationMs = Date.now() - _voice.startedAt;
+  const seconds = Math.max(1, Math.round(durationMs / 1000));
   _voice.recorder = null;
   // El último chunk llega después de stop(); esperamos onstop antes de enviar.
   const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
@@ -1339,16 +1343,17 @@ async function stopAndSendVoice() {
   if (!blob.size) { alert('La grabación quedó vacía'); return; }
   const ext = mime.includes('ogg') ? 'ogg' : (mime.includes('webm') ? 'webm' : 'm4a');
   const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: mime });
-  await uploadVoice(file);
+  await uploadVoice(file, seconds);
 }
 
-async function uploadVoice(file) {
+async function uploadVoice(file, seconds) {
   const jid = state.activeJid;
   if (!jid) return;
   const fd = new FormData();
   fd.append('tenant', state.tenantId);
   fd.append('jid', jid);
   fd.append('ptt', 'true');
+  if (seconds && seconds > 0) fd.append('seconds', String(seconds));
   fd.append('file', file);
   // Si hay reply context activo, lo respetamos
   if (state.replyContext?.stanzaId) fd.append('quotedStanzaId', state.replyContext.stanzaId);

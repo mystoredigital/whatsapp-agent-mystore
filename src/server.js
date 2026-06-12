@@ -809,17 +809,21 @@ export function startServer(port = 3000) {
 
       const numberId = parts.fields.numberId;
       const quotedStanzaId = parts.fields.quotedStanzaId || null;
+      // Duración explícita (segundos) — crítica para PTT, sin esto WhatsApp
+      // invalida el media con "audio ya no disponible". El frontend la calcula
+      // del timer del MediaRecorder.
+      const seconds = Number(parts.fields.seconds) || undefined;
       const session = numberId
         ? tenants.session(t.tenantId, numberId)
         : tenants.sessionForJid(t.tenantId, jid);
       if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
-      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName, caption, ptt: wantsPtt }, { quotedStanzaId });
+      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName, caption, ptt: wantsPtt, seconds }, { quotedStanzaId });
       logAudit({
         tenantId: t.tenantId, actor: actorFrom(req), type: 'send-media',
         target: { jid, numberId: session.numberId },
-        meta: { mimetype, size: buffer.length, fileName, hasCaption: !!caption, ptt: wantsPtt },
+        meta: { mimetype, size: buffer.length, fileName, hasCaption: !!caption, ptt: wantsPtt, seconds },
       });
-      res.json({ ok: true, url: uploaded.url, numberId: session.numberId, ptt: wantsPtt });
+      res.json({ ok: true, url: uploaded.url, numberId: session.numberId, ptt: wantsPtt, seconds });
     } catch (e) {
       if (e.status === 429) {
         const retryS = Math.ceil((e.retryAfterMs || 1000) / 1000);

@@ -930,21 +930,35 @@ export class WhatsAppSession {
   // Envía una media (imagen/video/audio/documento) a un JID. La URL puede ser de R2
   // (ya pública) o de GHL/externo — siempre se descarga a buffer y se envía como bytes
   // por Baileys para evitar problemas de CDN.
-  async sendMedia(jid, { url, mimetype, fileName, caption, ptt }, opts = {}) {
+  async sendMedia(jid, { url, mimetype, fileName, caption, ptt, seconds }, opts = {}) {
     if (!this.sock) throw new Error('WhatsApp no conectado');
     if (!opts.skipRateLimit) {
       try { this._enforceLimit(jid); }
       catch (e) { this._bump('skippedRateLimit'); throw e; }
     }
     const { buffer, contentType } = await downloadUrlToBuffer(url);
+    if (!buffer || buffer.length === 0) {
+      throw new Error(`media vacía descargada de ${url}`);
+    }
     const finalMime = mimetype || contentType;
     const { waType } = mimeToWa(finalMime);
     const base = { caption: caption || undefined };
     let payload;
     if (waType === 'image') payload = { ...base, image: buffer, mimetype: finalMime };
     else if (waType === 'video') payload = { ...base, video: buffer, mimetype: finalMime };
-    else if (waType === 'audio') payload = { audio: buffer, mimetype: finalMime, ptt: !!ptt };
+    else if (waType === 'audio') {
+      // PTT (nota de voz) requiere `seconds` y mimetype específico — sin esos
+      // dos campos WhatsApp marca el media como "no disponible" al reproducir
+      // aunque el mensaje se envíe correctamente.
+      payload = {
+        audio: buffer,
+        mimetype: finalMime,
+        ptt: !!ptt,
+        ...(seconds && seconds > 0 ? { seconds } : {}),
+      };
+    }
     else payload = { document: buffer, mimetype: finalMime, fileName: fileName || 'file' };
+    console.log(`[wa:${this._tag}] sendMedia jid=${jid} type=${waType} mime=${finalMime} size=${buffer.length}B${ptt ? ' ptt=true' : ''}${seconds ? ` seconds=${seconds}` : ''}`);
     const quotedMeta = this._quotedMetaFor(jid, opts.quotedStanzaId);
     const quotedProto = opts.quotedStanzaId ? this._msgCache.get(opts.quotedStanzaId) : null;
     if (quotedProto) payload.quoted = quotedProto;
