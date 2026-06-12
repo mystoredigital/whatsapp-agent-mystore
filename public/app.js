@@ -167,6 +167,14 @@ async function bootAuth() {
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.user = await res.json();
+    // Para role=client el backend fuerza el tenant del session ignorando ?tenant=.
+    // Alineamos state.tenantId al tenant real para que el subscribe del socket y
+    // las URLs de fetch coincidan (si no, suscribimos al room equivocado y
+    // perdemos los eventos en tiempo real).
+    if (state.user.role === 'client' && state.user.tenantId) {
+      state.tenantId = state.user.tenantId;
+      subscribeToActiveTenant();
+    }
     renderUserChip();
     applyRoleVisibility();
   } catch (e) {
@@ -1612,7 +1620,26 @@ on('tenantSelect', 'change', (e) => switchTenant(e.target.value));
 on('btnRelink', 'click', relink);
 on('btnProvisionProvider', 'click', provisionProvider);
 
-socket.emit('subscribe', state.tenantId);
+// Subscribirnos al room del tenant para recibir eventos en tiempo real.
+// CRÍTICO: hay que volver a emitirlo en CADA `connect` del socket — si solo
+// lo hacemos al cargar la página, cualquier reconexión (red mobile inestable,
+// tab en background mucho tiempo, blip de servidor) deja al cliente con un
+// socket nuevo que no está en ningún room → los mensajes no se ven en vivo
+// aunque sí se procesen en backend y aparezcan al recargar.
+function subscribeToActiveTenant() {
+  if (socket.connected) socket.emit('subscribe', state.tenantId);
+}
+socket.on('connect', () => {
+  console.log('[socket] conectado — suscribiendo a tenant:', state.tenantId);
+  subscribeToActiveTenant();
+});
+socket.on('disconnect', (reason) => {
+  console.warn('[socket] desconectado:', reason);
+});
+// Si el script carga después de que el socket ya conectó (orden de ejecución
+// con scripts async), forzamos el primer subscribe acá también.
+subscribeToActiveTenant();
+
 socket.on('state', (snap) => {
   state.conversations = snap.conversations;
   state.config = snap.config;
