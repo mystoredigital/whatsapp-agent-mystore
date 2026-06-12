@@ -947,14 +947,18 @@ export class WhatsAppSession {
     if (waType === 'image') payload = { ...base, image: buffer, mimetype: finalMime };
     else if (waType === 'video') payload = { ...base, video: buffer, mimetype: finalMime };
     else if (waType === 'audio') {
-      // PTT (nota de voz) requiere `seconds` y mimetype específico — sin esos
-      // dos campos WhatsApp marca el media como "no disponible" al reproducir
-      // aunque el mensaje se envíe correctamente.
+      // PTT (nota de voz): NO pasamos `seconds` aunque lo conozcamos. Razón
+      // técnica de Baileys: si pasamos seconds, requiresDurationComputation
+      // = false, entonces saveOriginalFileIfRequired = false, entonces
+      // originalFilePath queda undefined, y getAudioWaveform(undefined)
+      // falla silenciosamente. Sin waveform, WhatsApp invalida el media PTT
+      // con "audio ya no disponible". Dejamos que Baileys calcule duration
+      // (music-metadata) Y waveform (audio-decode) desde el archivo original.
       payload = {
         audio: buffer,
         mimetype: finalMime,
         ptt: !!ptt,
-        ...(seconds && seconds > 0 ? { seconds } : {}),
+        // seconds intencionalmente omitido — ver comentario arriba
       };
     }
     else payload = { document: buffer, mimetype: finalMime, fileName: fileName || 'file' };
