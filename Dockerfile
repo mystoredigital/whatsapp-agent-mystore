@@ -2,7 +2,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini ffmpeg
 
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev

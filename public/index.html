@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <link rel="manifest" href="/site.webmanifest" />
-<link rel="stylesheet" href="/style.css?v=20260529n" />
+<link rel="stylesheet" href="/style.css?v=20260612o" />
 </head>
 <body>
 <div class="app">
@@ -146,8 +146,18 @@
           <input type="file" id="manualFile" hidden accept="image/*,video/*,audio/*,application/pdf,application/*" />
           <span id="attachIcon">📎</span>
         </label>
+        <button id="manualRecord" class="attach-btn" type="button" title="Grabar nota de voz" disabled>🎤</button>
         <input type="text" id="manualInput" placeholder="Mensaje manual (modo humano)…" disabled />
         <button id="manualSend" class="btn primary" disabled>Enviar</button>
+      </div>
+      <!-- Barra de grabación en curso — visible mientras se graba una nota de voz -->
+      <div id="recordingBar" class="recording-bar hidden">
+        <span class="rec-dot"></span>
+        <span class="rec-label">Grabando</span>
+        <span id="recordingTimer" class="rec-timer">0:00</span>
+        <span class="topbar-spacer"></span>
+        <button id="recordCancel" class="btn-sm warn" type="button" title="Cancelar grabación">✕ Cancelar</button>
+        <button id="recordStop" class="btn-sm primary" type="button" title="Detener y enviar">▶ Enviar</button>
       </div>
     </footer>
   </section>
@@ -365,6 +375,6 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app.js?v=20260529n"></script>
+<script src="/app.js?v=20260612o"></script>
 </body>
 </html>

@@ -1054,6 +1054,10 @@ function renderMessages() {
   $('manualSend').disabled = !isHuman;
   $('manualFile').disabled = !isHuman;
   $('manualFile').parentElement.classList.toggle('disabled', !isHuman);
+  // Botón de nota de voz: solo habilitado en modo humano y si NO está grabando
+  if ($('manualRecord')) {
+    $('manualRecord').disabled = !isHuman || !!_voice.recorder;
+  }
 
   for (const m of conv.messages) {
     const div = document.createElement('div');
@@ -1233,6 +1237,133 @@ function stageFile(file) {
   }
 }
 
+// ---------- Grabación de notas de voz ----------
+// MediaRecorder en el navegador captura audio del micrófono; al detener se
+// arma un Blob que se sube al endpoint /api/send-media con ptt=true. El
+// servidor lo transcodifica a OGG/Opus si hace falta para que llegue como
+// nota de voz reproducible al contacto (burbuja redonda con onda).
+const _voice = {
+  recorder: null,
+  chunks: [],
+  stream: null,
+  startedAt: 0,
+  timerInterval: null,
+  mimeType: '',
+};
+
+function pickRecorderMime() {
+  // Preferencias: OGG/Opus (lo ideal — sin transcoding) → WebM/Opus →
+  // fallback al default del navegador.
+  const candidates = [
+    'audio/ogg; codecs=opus',
+    'audio/webm; codecs=opus',
+    'audio/webm',
+  ];
+  for (const m of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return ''; // default del navegador
+}
+
+function fmtRecTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function startVoiceRecording() {
+  if (_voice.recorder) return; // ya grabando
+  if (!state.activeJid) { alert('Seleccioná un chat primero'); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    alert('Tu navegador no soporta grabación de audio');
+    return;
+  }
+  try {
+    _voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert('No se pudo acceder al micrófono: ' + (e.message || e.name));
+    return;
+  }
+  _voice.mimeType = pickRecorderMime();
+  const opts = _voice.mimeType ? { mimeType: _voice.mimeType } : {};
+  _voice.chunks = [];
+  _voice.recorder = new MediaRecorder(_voice.stream, opts);
+  _voice.recorder.ondataavailable = (e) => { if (e.data?.size) _voice.chunks.push(e.data); };
+  _voice.recorder.start();
+  _voice.startedAt = Date.now();
+  // UI: marcar botón activo + mostrar barra
+  $('manualRecord').classList.add('recording');
+  $('manualRecord').title = 'Grabando — click para detener';
+  $('recordingBar').classList.remove('hidden');
+  $('recordingTimer').textContent = '0:00';
+  _voice.timerInterval = setInterval(() => {
+    $('recordingTimer').textContent = fmtRecTime(Date.now() - _voice.startedAt);
+  }, 250);
+}
+
+function stopVoiceTracksAndUI() {
+  if (_voice.timerInterval) { clearInterval(_voice.timerInterval); _voice.timerInterval = null; }
+  if (_voice.stream) { _voice.stream.getTracks().forEach((t) => t.stop()); _voice.stream = null; }
+  $('manualRecord').classList.remove('recording');
+  $('manualRecord').title = 'Grabar nota de voz';
+  $('recordingBar').classList.add('hidden');
+}
+
+function cancelVoiceRecording() {
+  if (!_voice.recorder) return;
+  try { _voice.recorder.stop(); } catch (_) { /* noop */ }
+  _voice.recorder = null;
+  _voice.chunks = [];
+  stopVoiceTracksAndUI();
+}
+
+async function stopAndSendVoice() {
+  if (!_voice.recorder) return;
+  const recorder = _voice.recorder;
+  const mime = _voice.mimeType || recorder.mimeType || 'audio/webm';
+  _voice.recorder = null;
+  // El último chunk llega después de stop(); esperamos onstop antes de enviar.
+  const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
+  try { recorder.stop(); } catch (_) { /* noop */ }
+  await stopped;
+  const blob = new Blob(_voice.chunks, { type: mime });
+  _voice.chunks = [];
+  stopVoiceTracksAndUI();
+  if (!blob.size) { alert('La grabación quedó vacía'); return; }
+  const ext = mime.includes('ogg') ? 'ogg' : (mime.includes('webm') ? 'webm' : 'm4a');
+  const file = new File([blob], `voice-${Date.now()}.${ext}`, { type: mime });
+  await uploadVoice(file);
+}
+
+async function uploadVoice(file) {
+  const jid = state.activeJid;
+  if (!jid) return;
+  const fd = new FormData();
+  fd.append('tenant', state.tenantId);
+  fd.append('jid', jid);
+  fd.append('ptt', 'true');
+  fd.append('file', file);
+  // Si hay reply context activo, lo respetamos
+  if (state.replyContext?.stanzaId) fd.append('quotedStanzaId', state.replyContext.stanzaId);
+  const recordBtn = $('manualRecord');
+  recordBtn.disabled = true;
+  try {
+    const r = await fetch(`/api/send-media?tenant=${encodeURIComponent(state.tenantId)}`, { method: 'POST', body: fd });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert('Error enviando nota de voz: ' + (err.error || r.status));
+      return;
+    }
+    clearReplyContext();
+  } finally {
+    recordBtn.disabled = !isHumanMode();
+  }
+}
+
+function isHumanMode() {
+  const conv = state.conversations.find((c) => c.jid === state.activeJid);
+  return !!conv && conv.mode === 'human';
+}
+
 async function sendManual() {
   if (!state.activeJid) return;
   const text = $('manualInput').value.trim();
@@ -1353,6 +1484,15 @@ on('mergeList', 'click', (e) => {
   performMerge(row.dataset.targetJid);
 });
 on('manualFile', 'change', (e) => stageFile(e.target.files?.[0] || null));
+
+// Nota de voz: el botón 🎤 alterna entre iniciar y detener-y-enviar. Cancelar
+// limpia sin enviar. Atajo Esc también cancela mientras está grabando.
+on('manualRecord', 'click', () => {
+  if (_voice.recorder) stopAndSendVoice();
+  else startVoiceRecording();
+});
+on('recordStop', 'click', stopAndSendVoice);
+on('recordCancel', 'click', cancelVoiceRecording);
 on('searchInput', 'input', (e) => {
   state.searchQuery = e.target.value.trim();
   renderChatList();

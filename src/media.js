@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 
 const PUBLIC_URL = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
 const BUCKET = process.env.R2_BUCKET;
@@ -79,4 +80,47 @@ export function mimeToWa(mimeType) {
   if (base.startsWith('video/')) return { ext: base.split('/')[1] || 'mp4', waType: 'video' };
   if (base.startsWith('audio/')) return { ext: base.split('/')[1] || 'mp3', waType: 'audio' };
   return { ext: 'bin', waType: 'document' };
+}
+
+// Transcodifica cualquier audio (webm/opus, mp3, mp4, wav, etc.) a OGG/Opus
+// mono 32kbps — formato que WhatsApp acepta como nota de voz reproducible (PTT).
+// Sin esta transcodificación los audios del navegador (WebM/Opus de Chrome,
+// MP4/AAC de Safari) llegan al contacto como archivo descargable, no como
+// burbuja redonda con onda. Requiere ffmpeg en el container (apk add ffmpeg).
+//
+// Devuelve { buffer, mimetype: 'audio/ogg', extension: 'ogg' }.
+export function transcodeToOggOpus(inputBuffer) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', 'pipe:0',         // entrada via stdin
+      '-vn',                  // descartar video si lo hay
+      '-c:a', 'libopus',      // codec opus
+      '-b:a', '32k',          // bitrate ideal para voz
+      '-ac', '1',             // mono
+      '-ar', '16000',         // sample rate 16kHz (típico voz WhatsApp)
+      '-f', 'ogg',            // container OGG
+      'pipe:1',               // salida via stdout
+    ];
+    const ff = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const chunks = [];
+    const errChunks = [];
+    ff.stdout.on('data', (c) => chunks.push(c));
+    ff.stderr.on('data', (c) => errChunks.push(c));
+    ff.on('error', (e) => reject(new Error(`ffmpeg no disponible: ${e.message}`)));
+    ff.on('close', (code) => {
+      if (code !== 0) {
+        const errMsg = Buffer.concat(errChunks).toString('utf8').slice(0, 500);
+        return reject(new Error(`ffmpeg salió con código ${code}: ${errMsg}`));
+      }
+      resolve({
+        buffer: Buffer.concat(chunks),
+        mimetype: 'audio/ogg; codecs=opus',
+        extension: 'ogg',
+      });
+    });
+    // Escribimos el input y cerramos stdin para que ffmpeg arranque a procesar
+    ff.stdin.on('error', () => { /* puede cerrarse antes; ignoramos */ });
+    ff.stdin.end(inputBuffer);
+  });
 }

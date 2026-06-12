@@ -21,7 +21,7 @@ import { phoneToJid } from './ghl/phone.js';
 import { GHLClient } from './ghl/client.js';
 import { decryptGhlPayload, signSession, verifySession } from './ghl/sso.js';
 import { ghlWebhookGuard } from './ghl/webhook.js';
-import { uploadBufferToR2, mimeToWa, isMediaConfigured } from './media.js';
+import { uploadBufferToR2, mimeToWa, isMediaConfigured, transcodeToOggOpus } from './media.js';
 
 // Decodifica un JWT GHL para inspeccionar scopes (sin verificación — solo para debug).
 function decodeJwtPayload(jwt) {
@@ -777,11 +777,33 @@ export function startServer(port = 3000) {
       const file = parts.files.file;
       if (!jid || !file) return res.status(400).json({ error: 'jid y file requeridos' });
 
-      const mimetype = file.contentType || 'application/octet-stream';
+      // Flag ptt=true → el cliente quiere mandar nota de voz (burbuja redonda
+      // reproducible). Transcodificamos a OGG/Opus si no viene ya en ese
+      // formato — WhatsApp solo lo trata como PTT si el container es OGG.
+      const wantsPtt = parts.fields.ptt === 'true' || parts.fields.ptt === '1';
+      let mimetype = file.contentType || 'application/octet-stream';
+      let buffer = file.buffer;
+      let fileName = file.filename;
+      if (wantsPtt) {
+        const isOpusOgg = /^audio\/ogg/i.test(mimetype);
+        if (!isOpusOgg) {
+          try {
+            const tc = await transcodeToOggOpus(file.buffer);
+            buffer = tc.buffer;
+            mimetype = tc.mimetype;
+            fileName = (fileName || 'voice').replace(/\.[^.]+$/, '') + '.ogg';
+          } catch (e) {
+            console.error('[send-media] transcode falló, enviando original:', e.message);
+            // Soft-fail: si ffmpeg no está o falla, mandamos el audio
+            // original. Llegará como archivo en vez de PTT, pero llega.
+          }
+        }
+      }
+
       const { ext } = mimeToWa(mimetype);
-      const uploaded = await uploadBufferToR2(file.buffer, {
+      const uploaded = await uploadBufferToR2(buffer, {
         contentType: mimetype,
-        extension: file.filename ? file.filename.split('.').pop() : ext,
+        extension: fileName ? fileName.split('.').pop() : ext,
         prefix: `wa/${t.tenantId}/manual`,
       });
 
@@ -791,13 +813,13 @@ export function startServer(port = 3000) {
         ? tenants.session(t.tenantId, numberId)
         : tenants.sessionForJid(t.tenantId, jid);
       if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
-      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName: file.filename, caption }, { quotedStanzaId });
+      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName, caption, ptt: wantsPtt }, { quotedStanzaId });
       logAudit({
         tenantId: t.tenantId, actor: actorFrom(req), type: 'send-media',
         target: { jid, numberId: session.numberId },
-        meta: { mimetype, size: file.buffer.length, fileName: file.filename, hasCaption: !!caption },
+        meta: { mimetype, size: buffer.length, fileName, hasCaption: !!caption, ptt: wantsPtt },
       });
-      res.json({ ok: true, url: uploaded.url, numberId: session.numberId });
+      res.json({ ok: true, url: uploaded.url, numberId: session.numberId, ptt: wantsPtt });
     } catch (e) {
       if (e.status === 429) {
         const retryS = Math.ceil((e.retryAfterMs || 1000) / 1000);
