@@ -930,7 +930,7 @@ export class WhatsAppSession {
   // Envía una media (imagen/video/audio/documento) a un JID. La URL puede ser de R2
   // (ya pública) o de GHL/externo — siempre se descarga a buffer y se envía como bytes
   // por Baileys para evitar problemas de CDN.
-  async sendMedia(jid, { url, mimetype, fileName, caption, ptt, seconds }, opts = {}) {
+  async sendMedia(jid, { url, mimetype, fileName, caption, ptt, seconds, waveform }, opts = {}) {
     if (!this.sock) throw new Error('WhatsApp no conectado');
     if (!opts.skipRateLimit) {
       try { this._enforceLimit(jid); }
@@ -947,22 +947,21 @@ export class WhatsAppSession {
     if (waType === 'image') payload = { ...base, image: buffer, mimetype: finalMime };
     else if (waType === 'video') payload = { ...base, video: buffer, mimetype: finalMime };
     else if (waType === 'audio') {
-      // PTT (nota de voz): NO pasamos `seconds` aunque lo conozcamos. Razón
-      // técnica de Baileys: si pasamos seconds, requiresDurationComputation
-      // = false, entonces saveOriginalFileIfRequired = false, entonces
-      // originalFilePath queda undefined, y getAudioWaveform(undefined)
-      // falla silenciosamente. Sin waveform, WhatsApp invalida el media PTT
-      // con "audio ya no disponible". Dejamos que Baileys calcule duration
-      // (music-metadata) Y waveform (audio-decode) desde el archivo original.
+      // PTT: pasamos seconds Y waveform explícitamente. Si dejamos que Baileys
+      // los calcule, depende de la dep opcional `audio-decode` que falla
+      // silenciosamente en Docker/Alpine → waveform vacía → WhatsApp muestra
+      // "Este audio ya no está disponible". Con ambos campos seteados, Baileys
+      // los usa tal cual y no entra en ese path frágil.
       payload = {
         audio: buffer,
         mimetype: finalMime,
         ptt: !!ptt,
-        // seconds intencionalmente omitido — ver comentario arriba
+        ...(seconds ? { seconds } : {}),
+        ...(waveform ? { waveform } : {}),
       };
     }
     else payload = { document: buffer, mimetype: finalMime, fileName: fileName || 'file' };
-    console.log(`[wa:${this._tag}] sendMedia jid=${jid} type=${waType} mime=${finalMime} size=${buffer.length}B${ptt ? ' ptt=true' : ''}${seconds ? ` seconds=${seconds}` : ''}`);
+    console.log(`[wa:${this._tag}] sendMedia jid=${jid} type=${waType} mime=${finalMime} size=${buffer.length}B${ptt ? ' ptt=true' : ''}${seconds ? ` seconds=${seconds}` : ''}${waveform ? ` waveform=${waveform.length}B` : ''}`);
     const quotedMeta = this._quotedMetaFor(jid, opts.quotedStanzaId);
     const quotedProto = opts.quotedStanzaId ? this._msgCache.get(opts.quotedStanzaId) : null;
     if (quotedProto) payload.quoted = quotedProto;

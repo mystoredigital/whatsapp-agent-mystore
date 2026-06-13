@@ -21,7 +21,7 @@ import { phoneToJid } from './ghl/phone.js';
 import { GHLClient } from './ghl/client.js';
 import { decryptGhlPayload, signSession, verifySession } from './ghl/sso.js';
 import { ghlWebhookGuard } from './ghl/webhook.js';
-import { uploadBufferToR2, mimeToWa, isMediaConfigured, transcodeToOggOpus } from './media.js';
+import { uploadBufferToR2, mimeToWa, isMediaConfigured, transcodeToOggOpus, computePttMetadata } from './media.js';
 
 // Decodifica un JWT GHL para inspeccionar scopes (sin verificación — solo para debug).
 function decodeJwtPayload(jwt) {
@@ -809,19 +809,31 @@ export function startServer(port = 3000) {
 
       const numberId = parts.fields.numberId;
       const quotedStanzaId = parts.fields.quotedStanzaId || null;
-      // Duración explícita (segundos) — crítica para PTT, sin esto WhatsApp
-      // invalida el media con "audio ya no disponible". El frontend la calcula
-      // del timer del MediaRecorder.
-      const seconds = Number(parts.fields.seconds) || undefined;
+      // Duración (segundos) y waveform (64B 0-100) — ambos críticos para PTT.
+      // Sin ellos WhatsApp invalida el media con "audio ya no disponible".
+      // El frontend manda seconds del timer del MediaRecorder; nosotros además
+      // calculamos waveform desde el PCM con ffmpeg (no confiamos en audio-decode).
+      let seconds = Number(parts.fields.seconds) || undefined;
+      let waveform = null;
+      if (wantsPtt && buffer && buffer.length) {
+        try {
+          const meta = await computePttMetadata(buffer);
+          waveform = meta.waveform;
+          if (!seconds) seconds = meta.seconds;
+          console.log(`[send-media] PTT meta calculada: seconds=${meta.seconds} waveform=64B`);
+        } catch (e) {
+          console.error('[send-media] computePttMetadata falló:', e.message);
+        }
+      }
       const session = numberId
         ? tenants.session(t.tenantId, numberId)
         : tenants.sessionForJid(t.tenantId, jid);
       if (!session) return res.status(404).json({ error: 'sin sesión disponible para este chat' });
-      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName, caption, ptt: wantsPtt, seconds }, { quotedStanzaId });
+      await session.sendMedia(jid, { url: uploaded.url, mimetype, fileName, caption, ptt: wantsPtt, seconds, waveform }, { quotedStanzaId });
       logAudit({
         tenantId: t.tenantId, actor: actorFrom(req), type: 'send-media',
         target: { jid, numberId: session.numberId },
-        meta: { mimetype, size: buffer.length, fileName, hasCaption: !!caption, ptt: wantsPtt, seconds },
+        meta: { mimetype, size: buffer.length, fileName, hasCaption: !!caption, ptt: wantsPtt, seconds, waveform: !!waveform },
       });
       res.json({ ok: true, url: uploaded.url, numberId: session.numberId, ptt: wantsPtt, seconds });
     } catch (e) {
