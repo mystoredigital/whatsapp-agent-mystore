@@ -154,16 +154,25 @@ export function computePttMetadata(inputBuffer) {
 // Devuelve { buffer, mimetype: 'audio/ogg', extension: 'ogg' }.
 export function transcodeToOggOpus(inputBuffer) {
   return new Promise((resolve, reject) => {
+    // Config "canónica" que usan los wrappers de Baileys en producción
+    // (Evolution API, etc.). Cualquier desviación de estos parámetros se
+    // traduce en "audio ya no está disponible" al reproducir en WhatsApp,
+    // aunque el upload pase y la duración salga bien.
     const args = [
       '-hide_banner', '-loglevel', 'error',
-      '-i', 'pipe:0',         // entrada via stdin
-      '-vn',                  // descartar video si lo hay
-      '-c:a', 'libopus',      // codec opus
-      '-b:a', '32k',          // bitrate ideal para voz
-      '-ac', '1',             // mono
-      '-ar', '16000',         // sample rate 16kHz (típico voz WhatsApp)
-      '-f', 'ogg',            // container OGG
-      'pipe:1',               // salida via stdout
+      '-i', 'pipe:0',                  // entrada via stdin
+      '-vn',                           // descartar video si lo hay
+      '-c:a', 'libopus',               // codec opus
+      '-b:a', '32k',                   // bitrate ideal para voz
+      '-vbr', 'off',                   // CBR — WhatsApp espera bitrate constante
+      '-compression_level', '10',      // máxima compresión (no afecta calidad)
+      '-application', 'voip',          // modo voz (no music) — packing optimizado
+      '-ac', '1',                      // mono
+      '-ar', '48000',                  // Opus opera nativamente a 48kHz: forzar
+                                        // 16k generaba OGGs que algunos clientes
+                                        // de WhatsApp rechazaban al decodificar
+      '-f', 'ogg',                     // container OGG
+      'pipe:1',                        // salida via stdout
     ];
     const ff = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks = [];
